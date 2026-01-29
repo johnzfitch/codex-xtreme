@@ -6,7 +6,12 @@
 use anyhow::{bail, Context, Result};
 use cargo_metadata::Message;
 use cliclack::{confirm, input, intro, log, multiselect, outro, select, spinner};
-use codex_patcher::{load_from_path, apply_patches as patcher_apply, PatchConfig, PatchResult};
+use codex_xtreme::core::check_prerequisites;
+use codex_xtreme::cpu_detect::detect_cpu_target;
+use codex_patcher::{
+    compiler::{try_autofix_all, CompileDiagnostic},
+    apply_patches as patcher_apply, load_from_path, Edit, PatchConfig, PatchResult,
+};
 use std::ffi::OsStr;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -14,10 +19,23 @@ use std::process::{Command, Stdio};
 use std::time::SystemTime;
 use tracing::{debug, info, warn, instrument};
 
+/// Build error with captured diagnostics for auto-fix.
+#[derive(Debug)]
+enum BuildError {
+    /// Compilation failed with diagnostics that may be auto-fixable
+    CompileError {
+        diagnostics: Vec<CompileDiagnostic>,
+    },
+    /// Other build failure (spawn failed, etc.)
+    Other(anyhow::Error),
+}
+
 /// CLI arguments
 struct Args {
     /// Developer mode - enables cherry-pick UI and other advanced options
     dev_mode: bool,
+    /// Print CPU detection result and exit
+    detect_cpu_only: bool,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -62,14 +80,6 @@ struct Release {
     published: String,
 }
 
-#[derive(Debug, Clone)]
-struct CpuTarget {
-    /// The rustc target-cpu value (e.g., "znver5", "native")
-    rustc_name: String,
-    /// Human-readable description (e.g., "AMD Zen 5")
-    display_name: String,
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // MAIN WIZARD FLOW
 // ═══════════════════════════════════════════════════════════════════════════
@@ -83,6 +93,7 @@ fn parse_args() -> Args {
         eprintln!("Usage: codex-xtreme [OPTIONS]\n");
         eprintln!("Options:");
         eprintln!("  --dev, -d    Developer mode (cherry-pick commits, extra options)");
+        eprintln!("  --detect-cpu-only   Print CPU detection result and exit");
         eprintln!("  --help, -h   Show this help message");
         eprintln!("\nEnvironment:");
         eprintln!("  RUST_LOG=debug    Enable debug logging");
@@ -91,11 +102,21 @@ fn parse_args() -> Args {
 
     Args {
         dev_mode: args.iter().any(|a| a == "--dev" || a == "-d"),
+        detect_cpu_only: args.iter().any(|a| a == "--detect-cpu-only"),
     }
 }
 
 fn main() -> Result<()> {
     let args = parse_args();
+
+    if args.detect_cpu_only {
+        let cpu_target = detect_cpu_target();
+        println!(
+            "cpu.name={} detected_by={}",
+            cpu_target.name, cpu_target.detected_by
+        );
+        return Ok(());
+    }
 
     // Initialize tracing - use RUST_LOG env var (e.g., RUST_LOG=debug)
     tracing_subscriber::fmt()
@@ -113,6 +134,11 @@ fn main() -> Result<()> {
         std::process::exit(130);
     })
     .ok();
+
+    if let Err(err) = check_prerequisites() {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
 
     if args.dev_mode {
         intro("🚀 CODEX XTREME [DEV MODE] - Build Your Perfect Codex")?;
@@ -134,7 +160,7 @@ fn main() -> Result<()> {
 
     sp.stop(format!(
         "System: {} | mold: {} | rustc {}",
-        cpu_target.display_name,
+        cpu_target.display_name(),
         if has_mold { "yes" } else { "no" },
         rust_ver
     ));
@@ -285,12 +311,12 @@ fn main() -> Result<()> {
             })
             .collect();
 
-        // Default: patches with "privacy" or "subagent" in the name
+        // Default: patches with "privacy", "subagent", or "undo" in the name
         let defaults: Vec<PathBuf> = available_patches
             .iter()
             .filter(|(_, c)| {
                 let name = c.meta.name.to_lowercase();
-                name.contains("privacy") || name.contains("subagent")
+                name.contains("privacy") || name.contains("subagent") || name.contains("undo")
             })
             .map(|(p, _)| p.clone())
             .collect();
@@ -328,7 +354,7 @@ fn main() -> Result<()> {
 
     let use_cpu_opt = confirm(format!(
         "Optimize for your CPU? ({})",
-        cpu_target.display_name
+        cpu_target.display_name()
     ))
         .initial_value(true)
         .interact()?;
@@ -387,10 +413,14 @@ fn main() -> Result<()> {
 
     log::info("Starting build (this may take a while)...")?;
 
-    let mut binary_path = run_cargo_build(
+    let mut binary_path = build_with_autofix(
         &workspace,
         &profile,
-        if use_cpu_opt { Some(&cpu_target.rustc_name) } else { None },
+        if use_cpu_opt {
+            Some(cpu_target.rustc_target_cpu())
+        } else {
+            None
+        },
         use_mold,
         use_bolt, // Pass emit-relocs flag if BOLT is enabled
     )?;
@@ -435,73 +465,6 @@ fn main() -> Result<()> {
     ))?;
 
     Ok(())
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SYSTEM DETECTION
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Convert rustc CPU target name to human-readable description
-fn cpu_display_name(rustc_name: &str) -> String {
-    match rustc_name {
-        // AMD Zen series
-        "znver5" => "AMD Zen 5 (Ryzen 9000 / EPYC Turin)".into(),
-        "znver4" => "AMD Zen 4 (Ryzen 7000 / EPYC Genoa)".into(),
-        "znver3" => "AMD Zen 3 (Ryzen 5000 / EPYC Milan)".into(),
-        "znver2" => "AMD Zen 2 (Ryzen 3000 / EPYC Rome)".into(),
-        "znver1" => "AMD Zen 1 (Ryzen 1000/2000)".into(),
-        // Intel recent
-        "alderlake" => "Intel Alder Lake (12th Gen)".into(),
-        "raptorlake" => "Intel Raptor Lake (13th/14th Gen)".into(),
-        "skylake" => "Intel Skylake (6th Gen)".into(),
-        "haswell" => "Intel Haswell (4th Gen)".into(),
-        // Apple
-        "apple-m1" => "Apple M1".into(),
-        "apple-m2" => "Apple M2".into(),
-        "apple-m3" => "Apple M3".into(),
-        // Generic
-        "x86-64-v3" => "Modern x86-64 (AVX2, ~2015+)".into(),
-        "x86-64-v4" => "Recent x86-64 (AVX-512)".into(),
-        "native" => "Native (auto-detect)".into(),
-        // Fallback: just capitalize
-        other => other.to_string(),
-    }
-}
-
-fn detect_cpu_target() -> CpuTarget {
-    let rustc_name = detect_cpu_rustc_name();
-    let display_name = cpu_display_name(&rustc_name);
-    CpuTarget { rustc_name, display_name }
-}
-
-fn detect_cpu_rustc_name() -> String {
-    // Method 1: Ask rustc what "native" resolves to
-    if let Ok(output) = Command::new("rustc").args(["--print=target-cpus"]).output() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if line.contains("native") && line.contains("currently") {
-                if let Some(rest) = line.split("currently ").nth(1) {
-                    let cpu = rest.trim_end_matches(").").trim_end_matches(')').trim();
-                    if !cpu.is_empty() {
-                        return cpu.to_string();
-                    }
-                }
-            }
-        }
-    }
-
-    // Method 2: Parse /proc/cpuinfo for AMD family (Linux)
-    #[cfg(target_os = "linux")]
-    if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
-        if cpuinfo.contains("AuthenticAMD") {
-            if cpuinfo.contains("cpu family\t: 26") { return "znver5".into(); }
-            if cpuinfo.contains("cpu family\t: 25") { return "znver4".into(); }
-            if cpuinfo.contains("cpu family\t: 24") { return "znver3".into(); }
-            if cpuinfo.contains("cpu family\t: 23") { return "znver2".into(); }
-        }
-    }
-
-    "native".into()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -628,30 +591,37 @@ fn get_github_releases(repo: &Path) -> Result<Vec<Release>> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     debug!(raw_tags = %stdout.lines().count(), "Fetched tags from git");
 
-    let releases: Vec<Release> = stdout
-        .lines()
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split('|').collect();
-            let tag = parts.first()?.to_string();
+    let mut seen = std::collections::HashSet::new();
+    let mut releases = Vec::new();
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split('|').collect();
+        let tag = match parts.first() {
+            Some(tag) => tag.to_string(),
+            None => continue,
+        };
 
-            // Filter out malformed tags (like rust-vv*, rust-vrust-v*)
-            if !tag.starts_with("rust-v") || tag.starts_with("rust-vv") || tag.starts_with("rust-vrust") {
-                debug!(tag = %tag, "Skipping malformed tag");
-                return None;
-            }
+        // Filter out malformed tags (like rust-vv*, rust-vrust-v*)
+        if !tag.starts_with("rust-v") || tag.starts_with("rust-vv") || tag.starts_with("rust-vrust") {
+            debug!(tag = %tag, "Skipping malformed tag");
+            continue;
+        }
 
-            let published = parts.get(1).unwrap_or(&"").to_string();
-            let version = tag.strip_prefix("rust-v").unwrap_or(&tag).to_string();
+        if !seen.insert(tag.clone()) {
+            debug!(tag = %tag, "Skipping duplicate tag");
+            continue;
+        }
 
-            debug!(tag = %tag, version = %version, published = %published, "Found release");
+        let published = parts.get(1).unwrap_or(&"").to_string();
+        let version = tag.strip_prefix("rust-v").unwrap_or(&tag).to_string();
 
-            Some(Release {
-                tag,
-                version,
-                published,
-            })
-        })
-        .collect();
+        debug!(tag = %tag, version = %version, published = %published, "Found release");
+
+        releases.push(Release {
+            tag,
+            version,
+            published,
+        });
+    }
 
     info!(count = releases.len(), "Found releases");
     Ok(releases)
@@ -914,13 +884,112 @@ opt-level = 3
     Ok(())
 }
 
+/// Build with automatic fix loop for compiler errors.
+///
+/// When a build fails:
+/// 1. Extract diagnostics from build output (no separate cargo check needed)
+/// 2. Attempt to auto-fix E0063 (missing struct fields) and machine-applicable fixes
+/// 3. Retry the build (up to MAX_FIX_ATTEMPTS times)
+/// 4. If unfixable, display errors and fail
+fn build_with_autofix(
+    workspace: &Path,
+    profile: &str,
+    cpu_target: Option<&str>,
+    use_mold: bool,
+    emit_relocs: bool,
+) -> Result<PathBuf> {
+    const MAX_FIX_ATTEMPTS: usize = 5;
+
+    for attempt in 1..=MAX_FIX_ATTEMPTS {
+        match run_cargo_build(workspace, profile, cpu_target, use_mold, emit_relocs) {
+            Ok(path) => return Ok(path),
+            Err(BuildError::Other(e)) => {
+                // Non-compile error (spawn failed, etc.) - can't auto-fix
+                return Err(e);
+            }
+            Err(BuildError::CompileError { diagnostics }) => {
+                if diagnostics.is_empty() {
+                    // No diagnostics captured, can't auto-fix
+                    log::error("Build failed but no diagnostics captured")?;
+                    bail!("Build failed with unknown error");
+                }
+
+                log::warning(format!(
+                    "Build failed (attempt {}/{}), checking for auto-fixable errors...",
+                    attempt, MAX_FIX_ATTEMPTS
+                ))?;
+
+                // Attempt auto-fix using diagnostics from build output
+                let (edits, unfixable) = try_autofix_all(&diagnostics, workspace);
+
+                if edits.is_empty() {
+                    // No fixes available - display errors and fail
+                    log::error(format!(
+                        "No auto-fixes available for {} error(s)",
+                        unfixable.len()
+                    ))?;
+                    for diag in &unfixable {
+                        if let Some(rendered) = &diag.rendered {
+                            eprint!("{}", rendered);
+                        } else {
+                            eprintln!("error: {}", diag.message);
+                        }
+                    }
+                    bail!("Build failed with {} unfixable error(s)", unfixable.len());
+                }
+
+                // Apply fixes
+                log::step(format!(
+                    "Applying {} auto-fix(es) (attempt {})",
+                    edits.len(),
+                    attempt
+                ))?;
+
+                for edit in &edits {
+                    debug!("Applying fix to {}: {}..{}",
+                           edit.file.display(), edit.byte_start, edit.byte_end);
+                }
+
+                // Apply all edits
+                match Edit::apply_batch(edits) {
+                    Ok(results) => {
+                        let applied = results.iter().filter(|r| {
+                            matches!(r, codex_patcher::edit::EditResult::Applied { .. })
+                        }).count();
+                        log::info(format!("Applied {} fix(es)", applied))?;
+                    }
+                    Err(edit_err) => {
+                        log::error(format!("Failed to apply fixes: {}", edit_err))?;
+                        bail!("Failed to apply auto-fixes: {}", edit_err);
+                    }
+                }
+
+                // Show remaining unfixable errors
+                if !unfixable.is_empty() {
+                    log::warning(format!(
+                        "{} error(s) could not be auto-fixed",
+                        unfixable.len()
+                    ))?;
+                }
+
+                // Loop will retry the build
+            }
+        }
+    }
+
+    bail!(
+        "Build failed after {} auto-fix attempts. Manual intervention required.",
+        MAX_FIX_ATTEMPTS
+    )
+}
+
 fn run_cargo_build(
     workspace: &Path,
     profile: &str,
     cpu_target: Option<&str>,
     use_mold: bool,
     emit_relocs: bool, // For BOLT optimization
-) -> Result<PathBuf> {
+) -> Result<PathBuf, BuildError> {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(workspace)
         .args(["build", "--profile", profile, "-p", CODEX_PACKAGE, "--message-format=json"])
@@ -942,8 +1011,16 @@ fn run_cargo_build(
         cmd.env("RUSTFLAGS", rustflags.join(" "));
     }
 
-    let mut child = cmd.spawn().context("Failed to start cargo build")?;
-    let stdout = child.stdout.take().context("Failed to capture stdout")?;
+    let child = cmd.spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => return Err(BuildError::Other(e.into())),
+    };
+
+    let stdout = match child.stdout.take() {
+        Some(s) => s,
+        None => return Err(BuildError::Other(anyhow::anyhow!("Failed to capture stdout"))),
+    };
     let reader = std::io::BufReader::new(stdout);
 
     let sp = spinner();
@@ -951,9 +1028,17 @@ fn run_cargo_build(
 
     let mut artifact_count = 0;
     let mut binary_path: Option<PathBuf> = None;
+    let mut compiler_errors: Vec<cargo_metadata::diagnostic::Diagnostic> = Vec::new();
 
     for line in reader.lines() {
-        let line = line?;
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => return Err(BuildError::Other(e.into())),
+        };
+        // Defensive: proc macros can print garbage, only parse JSON lines
+        if !line.starts_with('{') {
+            continue;
+        }
         if let Ok(message) = serde_json::from_str::<Message>(&line) {
             match message {
                 Message::CompilerArtifact(art) => {
@@ -963,17 +1048,34 @@ fn run_cargo_build(
                     if art.target.name == CODEX_BINARY {
                         for path in &art.filenames {
                             let p = PathBuf::from(path);
-                            // Unix executable: no extension or empty extension
-                            if p.extension().map_or(true, |e| e.is_empty()) {
+                            // Accept executable: no extension (Unix) or .exe (Windows)
+                            let is_executable = p.extension().map_or(true, |e| {
+                                e.is_empty() || e.eq_ignore_ascii_case("exe")
+                            });
+                            if is_executable {
                                 binary_path = Some(p);
                             }
                         }
                     }
                 }
+                Message::CompilerMessage(msg) => {
+                    // Collect error-level diagnostics for auto-fix
+                    if matches!(
+                        msg.message.level,
+                        cargo_metadata::diagnostic::DiagnosticLevel::Error
+                    ) {
+                        compiler_errors.push(msg.message);
+                    }
+                }
                 Message::BuildFinished(fin) => {
                     if !fin.success {
                         sp.stop("Build failed!");
-                        bail!("Cargo build failed");
+                        // Convert to CompileDiagnostic and return for auto-fix
+                        let diagnostics: Vec<CompileDiagnostic> = compiler_errors
+                            .iter()
+                            .map(|e| CompileDiagnostic::from_cargo(e, workspace))
+                            .collect();
+                        return Err(BuildError::CompileError { diagnostics });
                     }
                 }
                 _ => {}
@@ -981,10 +1083,19 @@ fn run_cargo_build(
         }
     }
 
-    let status = child.wait()?;
+    let status = match child.wait() {
+        Ok(s) => s,
+        Err(e) => return Err(BuildError::Other(e.into())),
+    };
+
     if !status.success() {
         sp.stop("Build failed!");
-        bail!("Cargo build failed with status: {}", status);
+        // Convert to CompileDiagnostic and return for auto-fix
+        let diagnostics: Vec<CompileDiagnostic> = compiler_errors
+            .iter()
+            .map(|e| CompileDiagnostic::from_cargo(e, workspace))
+            .collect();
+        return Err(BuildError::CompileError { diagnostics });
     }
 
     sp.stop(format!("Compiled {} crates", artifact_count));
@@ -995,12 +1106,19 @@ fn run_cargo_build(
 
     // Fallback: construct expected path
     let target_dir = workspace.join("target");
-    let binary = target_dir.join(profile).join(CODEX_BINARY);
+    #[cfg(target_os = "windows")]
+    let binary_name = format!("{}.exe", CODEX_BINARY);
+    #[cfg(not(target_os = "windows"))]
+    let binary_name = CODEX_BINARY;
+    let binary = target_dir.join(profile).join(binary_name);
     if binary.exists() {
         return Ok(binary);
     }
 
-    bail!("Built binary not found. Expected at: {}", binary.display())
+    Err(BuildError::Other(anyhow::anyhow!(
+        "Built binary not found. Expected at: {}",
+        binary.display()
+    )))
 }
 
 /// Run BOLT optimization on a binary
@@ -1018,12 +1136,13 @@ fn run_bolt_optimization(binary_path: &Path) -> Result<PathBuf> {
     let bolted_binary = binary_dir.join(format!("{}-bolt", binary_name.to_string_lossy()));
     let perf_data = binary_dir.join("perf.data");
     let bolt_profile = binary_dir.join("perf.fdata");
+    let mut use_lbr = true;
 
     // Step 1: Profile with perf using LBR (Last Branch Record) sampling
     // This has zero runtime overhead compared to instrumentation
     log::info("Profiling binary with perf LBR (run some typical commands)...")?;
 
-    let perf_status = Command::new("perf")
+    let perf_output = Command::new("perf")
         .args([
             "record",
             "-e", "cycles:u",
@@ -1034,12 +1153,28 @@ fn run_bolt_optimization(binary_path: &Path) -> Result<PathBuf> {
         .arg(binary_path)
         .args(["--version"])  // Quick workload for demo
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .stderr(Stdio::piped())
+        .output();
 
-    if perf_status.is_err() || !perf_status.unwrap().success() {
+    let perf_failed = match &perf_output {
+        Ok(output) => !output.status.success(),
+        Err(_) => true,
+    };
+    if perf_failed {
+        use_lbr = false;
+        if let Ok(output) = perf_output {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = stderr.trim();
+            if !stderr.is_empty() {
+                log::warning(format!("perf LBR record failed: {stderr}"))?;
+            } else {
+                log::warning(format!("perf LBR record failed: {}", output.status))?;
+            }
+        } else {
+            log::warning("perf LBR record failed (failed to spawn perf).")?;
+        }
         // Try without LBR (fallback for systems without hardware support)
-        Command::new("perf")
+        let perf_fallback_output = Command::new("perf")
             .args([
                 "record",
                 "-e", "cycles:u",
@@ -1049,29 +1184,48 @@ fn run_bolt_optimization(binary_path: &Path) -> Result<PathBuf> {
             .arg(binary_path)
             .args(["--version"])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+            .stderr(Stdio::piped())
+            .output()
             .context("perf record failed")?;
+        if !perf_fallback_output.status.success() {
+            let stderr = String::from_utf8_lossy(&perf_fallback_output.stderr);
+            let stderr = stderr.trim();
+            if stderr.is_empty() {
+                bail!("perf record failed: {}", perf_fallback_output.status);
+            }
+            bail!("perf record failed: {}", stderr);
+        }
     }
 
     // Step 2: Convert perf data to BOLT format
-    let perf2bolt_status = Command::new("perf2bolt")
-        .args([
-            "-p", perf_data.to_str().unwrap(),
-            "-o", bolt_profile.to_str().unwrap(),
-        ])
-        .arg(binary_path)
+    let mut perf2bolt_cmd = Command::new("perf2bolt");
+    perf2bolt_cmd.args([
+        "-p",
+        perf_data.to_str().unwrap(),
+        "-o",
+        bolt_profile.to_str().unwrap(),
+    ]);
+    if !use_lbr {
+        perf2bolt_cmd.arg("--nl");
+    }
+    perf2bolt_cmd.arg(binary_path);
+    let perf2bolt_output = perf2bolt_cmd
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .status()
+        .output()
         .context("perf2bolt failed")?;
 
-    if !perf2bolt_status.success() {
-        bail!("perf2bolt conversion failed");
+    if !perf2bolt_output.status.success() {
+        let stderr = String::from_utf8_lossy(&perf2bolt_output.stderr);
+        let stderr = stderr.trim();
+        if stderr.is_empty() {
+            bail!("perf2bolt conversion failed: {}", perf2bolt_output.status);
+        }
+        bail!("perf2bolt conversion failed: {}", stderr);
     }
 
     // Step 3: Optimize with llvm-bolt
-    let bolt_status = Command::new("llvm-bolt")
+    let bolt_output = Command::new("llvm-bolt")
         .arg(binary_path)
         .args(["-o", bolted_binary.to_str().unwrap()])
         .args(["-data", bolt_profile.to_str().unwrap()])
@@ -1084,11 +1238,16 @@ fn run_bolt_optimization(binary_path: &Path) -> Result<PathBuf> {
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .status()
+        .output()
         .context("llvm-bolt failed")?;
 
-    if !bolt_status.success() {
-        bail!("llvm-bolt optimization failed");
+    if !bolt_output.status.success() {
+        let stderr = String::from_utf8_lossy(&bolt_output.stderr);
+        let stderr = stderr.trim();
+        if stderr.is_empty() {
+            bail!("llvm-bolt optimization failed: {}", bolt_output.status);
+        }
+        bail!("llvm-bolt optimization failed: {}", stderr);
     }
 
     // Cleanup temp files

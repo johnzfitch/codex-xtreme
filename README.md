@@ -92,6 +92,7 @@ Choose from available patches:
 | `privacy-patches` | Remove Statsig telemetry | On |
 | `subagent-limit` | Increase to 8 parallel agents | On |
 | `approvals-ui` | Simplified 4-preset approval system | On |
+| `undo-command` | Re-enable /undo slash command | On |
 | `cargo-config` | Linux x86_64 build optimizations | Off |
 
 ### 5. <img src=".github/assets/icons/gear-24x24.png" width="14" alt=""/> Build Configuration
