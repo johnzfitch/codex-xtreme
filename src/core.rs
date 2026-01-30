@@ -155,10 +155,15 @@ fn get_repo_age(repo: &Path) -> String {
         Ok(time) => {
             let duration = SystemTime::now().duration_since(time).unwrap_or_default();
             let secs = duration.as_secs();
-            if secs < 60 { format!("{}s ago", secs) }
-            else if secs < 3600 { format!("{}m ago", secs / 60) }
-            else if secs < 86400 { format!("{}h ago", secs / 3600) }
-            else { format!("{}d ago", secs / 86400) }
+            if secs < 60 {
+                format!("{}s ago", secs)
+            } else if secs < 3600 {
+                format!("{}m ago", secs / 60)
+            } else if secs < 86400 {
+                format!("{}h ago", secs / 3600)
+            } else {
+                format!("{}d ago", secs / 86400)
+            }
         }
         Err(_) => "unknown".into(),
     }
@@ -177,7 +182,10 @@ pub fn clone_codex(dest: &Path) -> Result<RepoInfo> {
 
         // Only remove if it looks like a git repo or empty directory
         let is_git_repo = dest.join(".git").exists();
-        let is_empty = dest.read_dir().map(|mut d| d.next().is_none()).unwrap_or(false);
+        let is_empty = dest
+            .read_dir()
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(false);
 
         if !is_git_repo && !is_empty {
             bail!(
@@ -242,7 +250,8 @@ pub fn get_releases(repo: &Path) -> Result<Vec<Release>> {
         };
 
         // Filter out malformed tags
-        if !tag.starts_with("rust-v") || tag.starts_with("rust-vv") || tag.starts_with("rust-vrust") {
+        if !tag.starts_with("rust-v") || tag.starts_with("rust-vv") || tag.starts_with("rust-vrust")
+        {
             continue;
         }
 
@@ -253,7 +262,11 @@ pub fn get_releases(repo: &Path) -> Result<Vec<Release>> {
         let published = parts.get(1).unwrap_or(&"").to_string();
         let version = tag.strip_prefix("rust-v").unwrap_or(&tag).to_string();
 
-        releases.push(Release { tag, version, published });
+        releases.push(Release {
+            tag,
+            version,
+            published,
+        });
     }
 
     Ok(releases)

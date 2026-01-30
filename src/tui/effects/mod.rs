@@ -1,7 +1,7 @@
 //! Visual effects for the Neo Tokyo TUI
 
-mod scanlines;
 mod glitch;
+mod scanlines;
 
-pub use scanlines::Scanlines;
 pub use glitch::GlitchText;
+pub use scanlines::Scanlines;

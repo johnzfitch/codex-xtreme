@@ -48,16 +48,12 @@ pub const WHITE: Color = Color::Rgb(255, 255, 255);
 
 /// Main title style - bold cyan
 pub fn title() -> Style {
-    Style::default()
-        .fg(CYAN)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
 }
 
 /// Large banner title
 pub fn banner() -> Style {
-    Style::default()
-        .fg(CYAN)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
 }
 
 /// Highlighted/selected item
@@ -70,9 +66,7 @@ pub fn highlight() -> Style {
 
 /// Active/focused element
 pub fn focused() -> Style {
-    Style::default()
-        .fg(CYAN)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
 }
 
 /// Normal text
@@ -97,16 +91,12 @@ pub fn dim() -> Style {
 
 /// Success messages
 pub fn success() -> Style {
-    Style::default()
-        .fg(GREEN)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
 }
 
 /// Error messages
 pub fn error() -> Style {
-    Style::default()
-        .fg(PINK)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(PINK).add_modifier(Modifier::BOLD)
 }
 
 /// Warning messages
@@ -116,9 +106,7 @@ pub fn warning() -> Style {
 
 /// Active/in-progress
 pub fn active() -> Style {
-    Style::default()
-        .fg(MAGENTA)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(MAGENTA).add_modifier(Modifier::BOLD)
 }
 
 /// Code/technical content
@@ -138,16 +126,12 @@ pub fn border_focused() -> Style {
 
 /// Japanese accent text
 pub fn kanji() -> Style {
-    Style::default()
-        .fg(MAGENTA_DIM)
-        .add_modifier(Modifier::DIM)
+    Style::default().fg(MAGENTA_DIM).add_modifier(Modifier::DIM)
 }
 
 /// Cursor/selection indicator
 pub fn cursor() -> Style {
-    Style::default()
-        .fg(CYAN)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
 }
 
 // ============================================================================

@@ -115,12 +115,12 @@ impl Widget for &InputScreen {
         }
 
         let chunks = Layout::vertical([
-            Constraint::Length(4),   // Header
-            Constraint::Length(1),   // Spacer
-            Constraint::Length(5),   // Input panel
-            Constraint::Length(2),   // Info
-            Constraint::Min(2),      // Spacer
-            Constraint::Length(2),   // Help
+            Constraint::Length(4), // Header
+            Constraint::Length(1), // Spacer
+            Constraint::Length(5), // Input panel
+            Constraint::Length(2), // Info
+            Constraint::Min(2),    // Spacer
+            Constraint::Length(2), // Help
         ])
         .split(area);
 
@@ -137,9 +137,7 @@ impl Widget for &InputScreen {
             height: chunks[2].height,
         };
 
-        let panel = Panel::new()
-            .title(&self.prompt)
-            .focused(true);
+        let panel = Panel::new().title(&self.prompt).focused(true);
         panel.render(input_area, buf);
 
         // Input value
@@ -178,7 +176,10 @@ impl Widget for &InputScreen {
                 .map(|(i, _)| i)
                 .unwrap_or(display_value.len());
 
-            (&display_value[start_byte..end_byte], self.cursor_pos - start_char)
+            (
+                &display_value[start_byte..end_byte],
+                self.cursor_pos - start_char,
+            )
         } else {
             (display_value.as_str(), self.cursor_pos)
         };
@@ -186,21 +187,25 @@ impl Widget for &InputScreen {
         buf.set_string(value_x, value_y, display, value_style);
 
         // Cursor
-        let cursor_visible = (self.frame / 30) % 2 == 0;
+        let cursor_visible = (self.frame / 30).is_multiple_of(2);
         if cursor_visible && !self.value.is_empty() {
             let cursor_x = value_x + cursor_offset as u16;
             buf.set_string(
                 cursor_x,
                 value_y,
                 "▎",
-                Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::CYAN)
+                    .add_modifier(Modifier::BOLD),
             );
         } else if self.value.is_empty() && cursor_visible {
             buf.set_string(
                 value_x,
                 value_y,
                 "▎",
-                Style::default().fg(theme::CYAN).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::CYAN)
+                    .add_modifier(Modifier::BOLD),
             );
         }
 

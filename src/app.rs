@@ -64,8 +64,24 @@ impl App {
         let cpu = core::detect_cpu_target();
         boot.add_check_with_detail("CPU Target", cpu.display_name());
         boot.add_check_with_detail("Rust compiler", format!("rustc {}", core::rust_version()));
-        boot.add_check_with_detail("mold linker", if core::has_mold() { "found" } else { "not found" }.to_string());
-        boot.add_check_with_detail("BOLT optimizer", if core::has_bolt() { "found" } else { "not found" }.to_string());
+        boot.add_check_with_detail(
+            "mold linker",
+            if core::has_mold() {
+                "found"
+            } else {
+                "not found"
+            }
+            .to_string(),
+        );
+        boot.add_check_with_detail(
+            "BOLT optimizer",
+            if core::has_bolt() {
+                "found"
+            } else {
+                "not found"
+            }
+            .to_string(),
+        );
 
         // Check patches
         let patches_status = match core::find_patches_dir() {
@@ -255,9 +271,9 @@ impl App {
 
     fn start_clone(&mut self, destination: String) {
         // Expand ~ to home directory
-        let expanded = if destination.starts_with("~/") {
+        let expanded = if let Some(stripped) = destination.strip_prefix("~/") {
             if let Some(home) = dirs::home_dir() {
-                home.join(&destination[2..]).to_string_lossy().to_string()
+                home.join(stripped).to_string_lossy().to_string()
             } else {
                 destination.clone()
             }
@@ -342,7 +358,7 @@ impl App {
 
                 PatchInfo {
                     name,
-                    description: config.meta.description.unwrap_or_else(|| config.meta.name),
+                    description: config.meta.description.unwrap_or(config.meta.name),
                     selected: auto_select,
                     compatible: true, // Could check version_range
                 }

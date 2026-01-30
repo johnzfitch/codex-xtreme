@@ -2,12 +2,7 @@
 
 use crate::tui::theme;
 use rand::Rng;
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::Style,
-    widgets::Widget,
-};
+use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::Widget};
 
 /// Glitched text that can animate from corrupted to resolved
 pub struct GlitchText<'a> {
@@ -73,9 +68,8 @@ impl Widget for GlitchText<'_> {
 
 fn random_glitch_char(rng: &mut impl Rng, _original: char) -> char {
     const GLITCH_CHARS: &[char] = &[
-        '█', '▓', '▒', '░', '▄', '▀', '■', '□',
-        '/', '\\', '|', '-', '_', '=', '+',
-        '?', '#', '@', '%', '&', '*',
+        '█', '▓', '▒', '░', '▄', '▀', '■', '□', '/', '\\', '|', '-', '_', '=', '+', '?', '#', '@',
+        '%', '&', '*',
     ];
     GLITCH_CHARS[rng.gen_range(0..GLITCH_CHARS.len())]
 }

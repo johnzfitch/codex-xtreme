@@ -1,7 +1,7 @@
 //! Version/tag selection screen
 
 use crate::tui::theme::{self, jp};
-use crate::tui::widgets::{Panel, SelectList, ListItem, ListStatus};
+use crate::tui::widgets::{ListItem, ListStatus, Panel, SelectList};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
@@ -70,11 +70,11 @@ impl Widget for &VersionSelectScreen {
         }
 
         let chunks = Layout::vertical([
-            Constraint::Length(4),   // Header
-            Constraint::Length(1),   // Spacer
-            Constraint::Min(8),      // Version list
-            Constraint::Length(6),   // Changelog panel
-            Constraint::Length(2),   // Help
+            Constraint::Length(4), // Header
+            Constraint::Length(1), // Spacer
+            Constraint::Min(8),    // Version list
+            Constraint::Length(6), // Changelog panel
+            Constraint::Length(2), // Help
         ])
         .split(area);
 
@@ -84,18 +84,21 @@ impl Widget for &VersionSelectScreen {
         buf.set_string(header_x, chunks[0].y + 1, &header_line, theme::title());
 
         // Build list items
-        let items: Vec<ListItem> = self.versions.iter().map(|ver| {
-            let mut item = ListItem::new(&ver.tag)
-                .secondary(ver.date.clone());
+        let items: Vec<ListItem> = self
+            .versions
+            .iter()
+            .map(|ver| {
+                let mut item = ListItem::new(&ver.tag).secondary(ver.date.clone());
 
-            if ver.is_latest {
-                item = item.status(ListStatus::Latest);
-            } else if ver.is_current {
-                item = item.status(ListStatus::Current);
-            }
+                if ver.is_latest {
+                    item = item.status(ListStatus::Latest);
+                } else if ver.is_current {
+                    item = item.status(ListStatus::Current);
+                }
 
-            item
-        }).collect();
+                item
+            })
+            .collect();
 
         // Version list panel
         let list_area = Rect {
@@ -105,9 +108,7 @@ impl Widget for &VersionSelectScreen {
             height: chunks[2].height,
         };
 
-        let panel = Panel::new()
-            .title("VERSIONS")
-            .focused(true);
+        let panel = Panel::new().title("VERSIONS").focused(true);
         panel.render(list_area, buf);
 
         let inner_area = Rect {
@@ -130,9 +131,7 @@ impl Widget for &VersionSelectScreen {
             height: chunks[3].height,
         };
 
-        let changelog_panel = Panel::new()
-            .title("CHANGELOG")
-            .title_jp(jp::CHANGELOG);
+        let changelog_panel = Panel::new().title("CHANGELOG").title_jp(jp::CHANGELOG);
         changelog_panel.render(changelog_area, buf);
 
         // Changelog content
