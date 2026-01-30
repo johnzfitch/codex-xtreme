@@ -10,9 +10,8 @@ keywords = ["codex", "cli", "build", "wizard", "patch"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
-# Patch system - local path for development, GitHub for release
-codex-patcher = { path = "../codex-patcher" }
-# codex-patcher = { git = "https://github.com/johnzfitch/codex-patcher" }
+# Patch system - GitHub dependency for CI; use `path = "../codex-patcher"` locally
+codex-patcher = { git = "https://github.com/johnzfitch/codex-patcher" }
 
 # TUI framework - Neo Tokyo XTREME edition
 ratatui = "0.29"

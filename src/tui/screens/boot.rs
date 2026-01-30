@@ -91,7 +91,8 @@ impl BootScreen {
         self.frame += 1;
 
         // Auto-advance checks for demo
-        if !self.complete && self.frame % 20 == 0 && self.current_check < self.checks.len() {
+        if !self.complete && self.frame.is_multiple_of(20) && self.current_check < self.checks.len()
+        {
             if let Some(check) = self.checks.get_mut(self.current_check) {
                 match check.status {
                     CheckStatus::Pending => {
@@ -116,7 +117,10 @@ impl BootScreen {
         if let Some(check) = self.checks.get_mut(idx) {
             check.status = status;
             check.detail = detail;
-            if status == CheckStatus::Ok || status == CheckStatus::Warning || status == CheckStatus::Error {
+            if status == CheckStatus::Ok
+                || status == CheckStatus::Warning
+                || status == CheckStatus::Error
+            {
                 self.current_check = self.current_check.max(idx + 1);
             }
         }
@@ -143,8 +147,15 @@ impl BootScreen {
         if self.checks.is_empty() {
             return 1.0;
         }
-        let completed = self.checks.iter()
-            .filter(|c| matches!(c.status, CheckStatus::Ok | CheckStatus::Warning | CheckStatus::Error))
+        let completed = self
+            .checks
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c.status,
+                    CheckStatus::Ok | CheckStatus::Warning | CheckStatus::Error
+                )
+            })
             .count();
         completed as f64 / self.checks.len() as f64
     }
@@ -161,16 +172,16 @@ impl Widget for &BootScreen {
 
         // Layout
         let chunks = Layout::vertical([
-            Constraint::Min(2),          // Top padding
-            Constraint::Length(8),       // Banner
-            Constraint::Length(2),       // Subtitle
-            Constraint::Length(1),       // Spacer
-            Constraint::Length(2),       // Status line
-            Constraint::Length(1),       // Spacer
-            Constraint::Min(5),          // System checks
-            Constraint::Length(1),       // Spacer
-            Constraint::Length(1),       // Progress bar
-            Constraint::Min(2),          // Bottom padding
+            Constraint::Min(2),    // Top padding
+            Constraint::Length(8), // Banner
+            Constraint::Length(2), // Subtitle
+            Constraint::Length(1), // Spacer
+            Constraint::Length(2), // Status line
+            Constraint::Length(1), // Spacer
+            Constraint::Min(5),    // System checks
+            Constraint::Length(1), // Spacer
+            Constraint::Length(1), // Progress bar
+            Constraint::Min(2),    // Bottom padding
         ])
         .split(area);
 

@@ -150,20 +150,16 @@ impl Widget for &BuildScreen {
 
 fn render_progress(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
     let chunks = Layout::vertical([
-        Constraint::Length(4),   // Header
-        Constraint::Length(3),   // Progress bar
-        Constraint::Length(2),   // Current item
-        Constraint::Min(8),      // Log output
-        Constraint::Length(2),   // Help
+        Constraint::Length(4), // Header
+        Constraint::Length(3), // Progress bar
+        Constraint::Length(2), // Current item
+        Constraint::Min(8),    // Log output
+        Constraint::Length(2), // Help
     ])
     .split(area);
 
     // Header with phase
-    let header_line = format!(
-        "░▒▓█ {} //{} █▓▒░",
-        screen.phase.title(),
-        screen.phase.jp()
-    );
+    let header_line = format!("░▒▓█ {} //{} █▓▒░", screen.phase.title(), screen.phase.jp());
     let header_x = area.x + (area.width.saturating_sub(header_line.len() as u16)) / 2;
     buf.set_string(header_x, chunks[0].y + 1, &header_line, theme::title());
 
@@ -202,9 +198,18 @@ fn render_progress(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
 
     // Log lines
     let log_start_y = log_area.y + 1;
-    for (i, line) in screen.log_lines.iter().rev().take(log_area.height.saturating_sub(2) as usize).enumerate() {
+    for (i, line) in screen
+        .log_lines
+        .iter()
+        .rev()
+        .take(log_area.height.saturating_sub(2) as usize)
+        .enumerate()
+    {
         let y = log_start_y + i as u16;
-        let display_line: String = line.chars().take(log_area.width.saturating_sub(4) as usize).collect();
+        let display_line: String = line
+            .chars()
+            .take(log_area.width.saturating_sub(4) as usize)
+            .collect();
         buf.set_string(log_area.x + 2, y, &display_line, theme::code());
     }
 
@@ -217,11 +222,11 @@ fn render_progress(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
 fn render_complete(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
     let chunks = Layout::vertical([
         Constraint::Min(2),
-        Constraint::Length(6),   // Banner
-        Constraint::Length(2),   // Spacer
-        Constraint::Length(5),   // Binary info
-        Constraint::Min(5),      // Patches
-        Constraint::Length(2),   // Exit prompt
+        Constraint::Length(6), // Banner
+        Constraint::Length(2), // Spacer
+        Constraint::Length(5), // Binary info
+        Constraint::Min(5),    // Patches
+        Constraint::Length(2), // Exit prompt
     ])
     .split(area);
 
@@ -245,7 +250,9 @@ fn render_complete(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
         title_x,
         banner_area.y + 1,
         &title,
-        Style::default().fg(theme::GREEN).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme::GREEN)
+            .add_modifier(Modifier::BOLD),
     );
 
     let jp_title = jp::BUILD_COMPLETE;
@@ -254,10 +261,20 @@ fn render_complete(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
 
     // Binary info
     if let Some(ref path) = screen.binary_path {
-        buf.set_string(area.x + 8, chunks[3].y, format!("Binary: {}", path), theme::normal());
+        buf.set_string(
+            area.x + 8,
+            chunks[3].y,
+            format!("Binary: {}", path),
+            theme::normal(),
+        );
     }
     if let Some(ref time) = screen.build_time {
-        buf.set_string(area.x + 8, chunks[3].y + 1, format!("Time:   {}", time), theme::normal());
+        buf.set_string(
+            area.x + 8,
+            chunks[3].y + 1,
+            format!("Time:   {}", time),
+            theme::normal(),
+        );
     }
 
     // Patches panel
@@ -271,15 +288,25 @@ fn render_complete(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
     let patches_panel = Panel::new().title("INSTALLED PATCHES");
     patches_panel.render(patches_area, buf);
 
-    for (i, patch) in screen.patches_applied.iter().take(patches_area.height.saturating_sub(2) as usize).enumerate() {
+    for (i, patch) in screen
+        .patches_applied
+        .iter()
+        .take(patches_area.height.saturating_sub(2) as usize)
+        .enumerate()
+    {
         let line = format!("  ✓ {}", patch);
-        buf.set_string(patches_area.x + 2, patches_area.y + 1 + i as u16, &line, theme::success());
+        buf.set_string(
+            patches_area.x + 2,
+            patches_area.y + 1 + i as u16,
+            &line,
+            theme::success(),
+        );
     }
 
     // Exit prompt
     let prompt = "Press any key to exit...";
     let prompt_x = area.x + (area.width.saturating_sub(prompt.len() as u16)) / 2;
-    let prompt_style = if (screen.frame / 30) % 2 == 0 {
+    let prompt_style = if (screen.frame / 30).is_multiple_of(2) {
         theme::muted()
     } else {
         theme::secondary()
@@ -290,9 +317,9 @@ fn render_complete(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
 fn render_error(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
     let chunks = Layout::vertical([
         Constraint::Min(2),
-        Constraint::Length(6),   // Error banner
-        Constraint::Min(8),      // Error message
-        Constraint::Length(2),   // Help
+        Constraint::Length(6), // Error banner
+        Constraint::Min(8),    // Error message
+        Constraint::Length(2), // Help
     ])
     .split(area);
 
@@ -312,12 +339,7 @@ fn render_error(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
 
     let title = "BUILD FAILED";
     let title_x = banner_x + (banner_width.saturating_sub(title.len() as u16)) / 2;
-    buf.set_string(
-        title_x,
-        banner_area.y + 1,
-        title,
-        theme::error(),
-    );
+    buf.set_string(title_x, banner_area.y + 1, title, theme::error());
 
     // Error message
     if let Some(ref msg) = screen.error_message {
@@ -333,8 +355,17 @@ fn render_error(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
 
         // Word wrap would be nice here
         let lines: Vec<&str> = msg.lines().collect();
-        for (i, line) in lines.iter().take(msg_area.height.saturating_sub(2) as usize).enumerate() {
-            buf.set_string(msg_area.x + 2, msg_area.y + 1 + i as u16, *line, theme::normal());
+        for (i, line) in lines
+            .iter()
+            .take(msg_area.height.saturating_sub(2) as usize)
+            .enumerate()
+        {
+            buf.set_string(
+                msg_area.x + 2,
+                msg_area.y + 1 + i as u16,
+                *line,
+                theme::normal(),
+            );
         }
     }
 

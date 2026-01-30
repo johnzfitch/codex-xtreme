@@ -82,11 +82,11 @@ impl Widget for &CloneScreen {
         }
 
         let chunks = Layout::vertical([
-            Constraint::Length(4),   // Header
-            Constraint::Length(1),   // Spacer
-            Constraint::Length(6),   // Status panel
-            Constraint::Min(4),      // Log/progress
-            Constraint::Length(2),   // Help
+            Constraint::Length(4), // Header
+            Constraint::Length(1), // Spacer
+            Constraint::Length(6), // Status panel
+            Constraint::Min(4),    // Log/progress
+            Constraint::Length(2), // Help
         ])
         .split(area);
 
@@ -120,7 +120,12 @@ impl Widget for &CloneScreen {
 
         // Destination
         let dest_line = format!("Destination: {}", self.destination);
-        buf.set_string(status_area.x + 2, status_area.y + 1, &dest_line, theme::secondary());
+        buf.set_string(
+            status_area.x + 2,
+            status_area.y + 1,
+            &dest_line,
+            theme::secondary(),
+        );
 
         // Source
         buf.set_string(
@@ -136,14 +141,29 @@ impl Widget for &CloneScreen {
                 let spinner_chars = theme::spinners::BRAILLE;
                 let spinner = spinner_chars[(self.frame / 4) as usize % spinner_chars.len()];
                 let progress_line = format!("{} {}", spinner, self.progress_text);
-                buf.set_string(status_area.x + 2, status_area.y + 4, &progress_line, theme::active());
+                buf.set_string(
+                    status_area.x + 2,
+                    status_area.y + 4,
+                    &progress_line,
+                    theme::active(),
+                );
             }
             CloneStatus::Complete => {
-                buf.set_string(status_area.x + 2, status_area.y + 4, "✓ Repository cloned successfully", theme::success());
+                buf.set_string(
+                    status_area.x + 2,
+                    status_area.y + 4,
+                    "✓ Repository cloned successfully",
+                    theme::success(),
+                );
             }
             CloneStatus::Error => {
                 if let Some(ref msg) = self.error_message {
-                    buf.set_string(status_area.x + 2, status_area.y + 4, &format!("✗ {}", msg), theme::error());
+                    buf.set_string(
+                        status_area.x + 2,
+                        status_area.y + 4,
+                        format!("✗ {}", msg),
+                        theme::error(),
+                    );
                 }
             }
         }

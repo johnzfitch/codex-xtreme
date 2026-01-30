@@ -6,26 +6,25 @@
 use anyhow::{bail, Context, Result};
 use cargo_metadata::Message;
 use cliclack::{confirm, input, intro, log, multiselect, outro, select, spinner};
+use codex_patcher::{
+    apply_patches as patcher_apply,
+    compiler::{try_autofix_all, CompileDiagnostic},
+    load_from_path, Edit, PatchConfig, PatchResult,
+};
 use codex_xtreme::core::check_prerequisites;
 use codex_xtreme::cpu_detect::detect_cpu_target;
-use codex_patcher::{
-    compiler::{try_autofix_all, CompileDiagnostic},
-    apply_patches as patcher_apply, load_from_path, Edit, PatchConfig, PatchResult,
-};
 use std::ffi::OsStr;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
-use tracing::{debug, info, warn, instrument};
+use tracing::{debug, info, instrument, warn};
 
 /// Build error with captured diagnostics for auto-fix.
 #[derive(Debug)]
 enum BuildError {
     /// Compilation failed with diagnostics that may be auto-fixable
-    CompileError {
-        diagnostics: Vec<CompileDiagnostic>,
-    },
+    CompileError { diagnostics: Vec<CompileDiagnostic> },
     /// Other build failure (spawn failed, etc.)
     Other(anyhow::Error),
 }
@@ -245,7 +244,11 @@ fn main() -> Result<()> {
         // Separate stable and pre-release versions
         let stable_releases: Vec<_> = releases
             .iter()
-            .filter(|r| !r.version.contains("alpha") && !r.version.contains("beta") && !r.version.contains("rc"))
+            .filter(|r| {
+                !r.version.contains("alpha")
+                    && !r.version.contains("beta")
+                    && !r.version.contains("rc")
+            })
             .collect();
 
         let display_releases = if stable_releases.is_empty() {
@@ -260,7 +263,9 @@ fn main() -> Result<()> {
             .iter()
             .enumerate()
             .map(|(i, r)| {
-                let is_prerelease = r.version.contains("alpha") || r.version.contains("beta") || r.version.contains("rc");
+                let is_prerelease = r.version.contains("alpha")
+                    || r.version.contains("beta")
+                    || r.version.contains("rc");
                 let label = if i == 0 && !is_prerelease {
                     format!("{} (latest stable)", r.version)
                 } else if i == 0 {
@@ -356,8 +361,8 @@ fn main() -> Result<()> {
         "Optimize for your CPU? ({})",
         cpu_target.display_name()
     ))
-        .initial_value(true)
-        .interact()?;
+    .initial_value(true)
+    .interact()?;
 
     let use_mold = if has_mold {
         confirm("Use mold linker? (faster linking, same binary)")
@@ -385,10 +390,11 @@ fn main() -> Result<()> {
             target_tag
         ))?;
 
-        let cherry_pick_input: String = input("Cherry-pick commits (comma-separated SHAs, or empty to skip)")
-            .placeholder("abc1234, def5678")
-            .default_input("")
-            .interact()?;
+        let cherry_pick_input: String =
+            input("Cherry-pick commits (comma-separated SHAs, or empty to skip)")
+                .placeholder("abc1234, def5678")
+                .default_input("")
+                .interact()?;
 
         let cherry_pick_shas: Vec<String> = cherry_pick_input
             .split(',')
@@ -398,7 +404,10 @@ fn main() -> Result<()> {
 
         if !cherry_pick_shas.is_empty() {
             let sp = spinner();
-            sp.start(format!("Cherry-picking {} commits...", cherry_pick_shas.len()));
+            sp.start(format!(
+                "Cherry-picking {} commits...",
+                cherry_pick_shas.len()
+            ));
             cherry_pick_commits(&repo.path, &cherry_pick_shas)?;
             sp.stop("Commits applied");
         }
@@ -525,10 +534,15 @@ fn get_repo_age(repo: &Path) -> String {
         Ok(time) => {
             let duration = SystemTime::now().duration_since(time).unwrap_or_default();
             let secs = duration.as_secs();
-            if secs < 60 { format!("{}s ago", secs) }
-            else if secs < 3600 { format!("{}m ago", secs / 60) }
-            else if secs < 86400 { format!("{}h ago", secs / 3600) }
-            else { format!("{}d ago", secs / 86400) }
+            if secs < 60 {
+                format!("{}s ago", secs)
+            } else if secs < 3600 {
+                format!("{}m ago", secs / 60)
+            } else if secs < 86400 {
+                format!("{}h ago", secs / 3600)
+            } else {
+                format!("{}d ago", secs / 86400)
+            }
         }
         Err(_) => "unknown".into(),
     }
@@ -601,7 +615,8 @@ fn get_github_releases(repo: &Path) -> Result<Vec<Release>> {
         };
 
         // Filter out malformed tags (like rust-vv*, rust-vrust-v*)
-        if !tag.starts_with("rust-v") || tag.starts_with("rust-vv") || tag.starts_with("rust-vrust") {
+        if !tag.starts_with("rust-v") || tag.starts_with("rust-vv") || tag.starts_with("rust-vrust")
+        {
             debug!(tag = %tag, "Skipping malformed tag");
             continue;
         }
@@ -687,7 +702,10 @@ fn cherry_pick_commits(repo: &Path, shas: &[String]) -> Result<()> {
                 .args(["cherry-pick", "--abort"])
                 .status()
                 .ok();
-            log::warning(format!("Skipped conflicting commit: {}", &sha[..7.min(sha.len())]))?;
+            log::warning(format!(
+                "Skipped conflicting commit: {}",
+                &sha[..7.min(sha.len())]
+            ))?;
         }
     }
     Ok(())
@@ -769,8 +787,8 @@ fn get_available_patches() -> Result<Vec<(PathBuf, PatchConfig)>> {
 /// Read the workspace version from Cargo.toml
 fn read_workspace_version(workspace: &Path) -> Result<String> {
     let cargo_toml = workspace.join("Cargo.toml");
-    let content = std::fs::read_to_string(&cargo_toml)
-        .context("Failed to read workspace Cargo.toml")?;
+    let content =
+        std::fs::read_to_string(&cargo_toml).context("Failed to read workspace Cargo.toml")?;
 
     // Look for version = "x.y.z" in [workspace.package] or top-level
     for line in content.lines() {
@@ -946,16 +964,23 @@ fn build_with_autofix(
                 ))?;
 
                 for edit in &edits {
-                    debug!("Applying fix to {}: {}..{}",
-                           edit.file.display(), edit.byte_start, edit.byte_end);
+                    debug!(
+                        "Applying fix to {}: {}..{}",
+                        edit.file.display(),
+                        edit.byte_start,
+                        edit.byte_end
+                    );
                 }
 
                 // Apply all edits
                 match Edit::apply_batch(edits) {
                     Ok(results) => {
-                        let applied = results.iter().filter(|r| {
-                            matches!(r, codex_patcher::edit::EditResult::Applied { .. })
-                        }).count();
+                        let applied = results
+                            .iter()
+                            .filter(|r| {
+                                matches!(r, codex_patcher::edit::EditResult::Applied { .. })
+                            })
+                            .count();
                         log::info(format!("Applied {} fix(es)", applied))?;
                     }
                     Err(edit_err) => {
@@ -992,7 +1017,14 @@ fn run_cargo_build(
 ) -> Result<PathBuf, BuildError> {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(workspace)
-        .args(["build", "--profile", profile, "-p", CODEX_PACKAGE, "--message-format=json"])
+        .args([
+            "build",
+            "--profile",
+            profile,
+            "-p",
+            CODEX_PACKAGE,
+            "--message-format=json",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
 
@@ -1019,7 +1051,11 @@ fn run_cargo_build(
 
     let stdout = match child.stdout.take() {
         Some(s) => s,
-        None => return Err(BuildError::Other(anyhow::anyhow!("Failed to capture stdout"))),
+        None => {
+            return Err(BuildError::Other(anyhow::anyhow!(
+                "Failed to capture stdout"
+            )))
+        }
     };
     let reader = std::io::BufReader::new(stdout);
 
@@ -1049,9 +1085,9 @@ fn run_cargo_build(
                         for path in &art.filenames {
                             let p = PathBuf::from(path);
                             // Accept executable: no extension (Unix) or .exe (Windows)
-                            let is_executable = p.extension().map_or(true, |e| {
-                                e.is_empty() || e.eq_ignore_ascii_case("exe")
-                            });
+                            let is_executable = p
+                                .extension()
+                                .is_none_or(|e| e.is_empty() || e.eq_ignore_ascii_case("exe"));
                             if is_executable {
                                 binary_path = Some(p);
                             }
@@ -1145,13 +1181,16 @@ fn run_bolt_optimization(binary_path: &Path) -> Result<PathBuf> {
     let perf_output = Command::new("perf")
         .args([
             "record",
-            "-e", "cycles:u",
-            "-j", "any,u",        // LBR sampling (AMD BRS / Intel LBR)
-            "-o", perf_data.to_str().unwrap(),
+            "-e",
+            "cycles:u",
+            "-j",
+            "any,u", // LBR sampling (AMD BRS / Intel LBR)
+            "-o",
+            perf_data.to_str().unwrap(),
             "--",
         ])
         .arg(binary_path)
-        .args(["--version"])  // Quick workload for demo
+        .args(["--version"]) // Quick workload for demo
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output();
@@ -1177,8 +1216,10 @@ fn run_bolt_optimization(binary_path: &Path) -> Result<PathBuf> {
         let perf_fallback_output = Command::new("perf")
             .args([
                 "record",
-                "-e", "cycles:u",
-                "-o", perf_data.to_str().unwrap(),
+                "-e",
+                "cycles:u",
+                "-o",
+                perf_data.to_str().unwrap(),
                 "--",
             ])
             .arg(binary_path)
@@ -1230,11 +1271,11 @@ fn run_bolt_optimization(binary_path: &Path) -> Result<PathBuf> {
         .args(["-o", bolted_binary.to_str().unwrap()])
         .args(["-data", bolt_profile.to_str().unwrap()])
         .args([
-            "-reorder-blocks=ext-tsp",     // Extended TSP for block ordering
-            "-reorder-functions=cdsort",   // Call-graph directed sort
-            "-split-functions",            // Split hot/cold code
-            "-split-all-cold",             // Aggressively split cold code
-            "-dyno-stats",                 // Print optimization stats
+            "-reorder-blocks=ext-tsp",   // Extended TSP for block ordering
+            "-reorder-functions=cdsort", // Call-graph directed sort
+            "-split-functions",          // Split hot/cold code
+            "-split-all-cold",           // Aggressively split cold code
+            "-dyno-stats",               // Print optimization stats
         ])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -1264,7 +1305,10 @@ fn run_bolt_optimization(binary_path: &Path) -> Result<PathBuf> {
 fn run_verification_tests(workspace: &Path) -> Result<()> {
     let tests = [
         ("cargo check", vec!["check", "--all"]),
-        ("codex-common tests", vec!["test", "-p", "codex-common", "--lib"]),
+        (
+            "codex-common tests",
+            vec!["test", "-p", "codex-common", "--lib"],
+        ),
     ];
 
     for (name, args) in tests {
@@ -1311,7 +1355,10 @@ fn setup_alias(binary_path: &Path) -> Result<()> {
                 .args(["-i", &format!("s|alias codex=.*|{}|", alias_line), &rc_file])
                 .status()?;
         } else {
-            std::fs::write(&rc_file, format!("{}\n\n# Added by codex-xtreme\n{}\n", contents, alias_line))?;
+            std::fs::write(
+                &rc_file,
+                format!("{}\n\n# Added by codex-xtreme\n{}\n", contents, alias_line),
+            )?;
         }
     }
 

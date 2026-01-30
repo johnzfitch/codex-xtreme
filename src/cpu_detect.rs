@@ -142,7 +142,14 @@ fn detect_cpu_family() -> Option<(String, DetectionMethod)> {
 
 #[cfg(target_os = "windows")]
 fn detect_cpu_name_powershell() -> Option<String> {
-    let output = Command::new("powershell")
+    detect_cpu_name_powershell_with("powershell")
+        .or_else(|| detect_cpu_name_powershell_with("pwsh"))
+}
+
+#[cfg(target_os = "windows")]
+fn detect_cpu_name_powershell_with(shell: &str) -> Option<String> {
+    let shell_path = which::which(shell).ok()?;
+    let output = Command::new(shell_path)
         .args([
             "-NoProfile",
             "-Command",
@@ -163,7 +170,8 @@ fn detect_cpu_name_powershell() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn detect_cpu_name_wmic() -> Option<String> {
-    let output = Command::new("wmic")
+    let wmic_path = which::which("wmic").ok()?;
+    let output = Command::new(wmic_path)
         .args(["cpu", "get", "name"])
         .output()
         .ok()?;
