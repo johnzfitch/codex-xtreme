@@ -198,12 +198,14 @@ impl Widget for SelectList<'_> {
 }
 
 /// Checkbox list for multi-select
+#[allow(dead_code)]
 pub struct CheckList<'a> {
     items: &'a [(String, bool)],
     cursor: usize,
     frame: u64,
 }
 
+#[allow(dead_code)]
 impl<'a> CheckList<'a> {
     pub fn new(items: &'a [(String, bool)]) -> Self {
         Self {

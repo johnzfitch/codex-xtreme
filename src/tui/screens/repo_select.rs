@@ -1,7 +1,7 @@
 //! Repository selection screen
 
 use crate::tui::theme::{self, jp};
-use crate::tui::widgets::{Panel, SelectList, ListItem, ListStatus};
+use crate::tui::widgets::{ListItem, ListStatus, Panel, SelectList};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
@@ -87,42 +87,52 @@ impl Widget for &RepoSelectScreen {
         }
 
         let chunks = Layout::vertical([
-            Constraint::Length(4),   // Header
-            Constraint::Length(1),   // Spacer
-            Constraint::Min(10),     // Repo list
-            Constraint::Length(2),   // Help
+            Constraint::Length(4), // Header
+            Constraint::Length(1), // Spacer
+            Constraint::Min(10),   // Repo list
+            Constraint::Length(2), // Help
         ])
         .split(area);
 
         // Header
-        render_header(chunks[0], buf, "SELECT TARGET", jp::TARGET_SELECT, self.frame);
+        render_header(
+            chunks[0],
+            buf,
+            "SELECT TARGET",
+            jp::TARGET_SELECT,
+            self.frame,
+        );
 
         // Build list items
-        let mut items: Vec<ListItem> = self.repos.iter().map(|repo| {
-            let status = if repo.is_modified {
-                ListStatus::Modified
-            } else {
-                ListStatus::Ready
-            };
+        let mut items: Vec<ListItem> = self
+            .repos
+            .iter()
+            .map(|repo| {
+                let status = if repo.is_modified {
+                    ListStatus::Modified
+                } else {
+                    ListStatus::Ready
+                };
 
-            let status_text = if repo.is_modified {
-                jp::MODIFIED
-            } else {
-                jp::READY
-            };
+                let status_text = if repo.is_modified {
+                    jp::MODIFIED
+                } else {
+                    jp::READY
+                };
 
-            ListItem::new(repo.display_path())
-                .description(format!("Branch: {} | {}", repo.branch, repo.age))
-                .status(status)
-                .secondary(status_text.to_string())
-        }).collect();
+                ListItem::new(repo.display_path())
+                    .description(format!("Branch: {} | {}", repo.branch, repo.age))
+                    .status(status)
+                    .secondary(status_text.to_string())
+            })
+            .collect();
 
         // Add clone option
         if self.show_clone_option {
             items.push(
                 ListItem::new("+ CLONE FROM GITHUB")
-                    .description(format!("Clone fresh from openai/codex"))
-                    .status(ListStatus::None)
+                    .description("Clone fresh from openai/codex".to_string())
+                    .status(ListStatus::None),
             );
         }
 
@@ -134,9 +144,7 @@ impl Widget for &RepoSelectScreen {
             height: chunks[2].height,
         };
 
-        let panel = Panel::new()
-            .title("REPOSITORIES")
-            .focused(true);
+        let panel = Panel::new().title("REPOSITORIES").focused(true);
         panel.render(list_area, buf);
 
         let inner_area = Rect {

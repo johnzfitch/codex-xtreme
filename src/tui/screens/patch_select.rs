@@ -93,11 +93,11 @@ impl Widget for &PatchSelectScreen {
         }
 
         let chunks = Layout::vertical([
-            Constraint::Length(4),   // Header
-            Constraint::Length(1),   // Spacer
-            Constraint::Min(10),     // Patch list
-            Constraint::Length(4),   // Compatibility info
-            Constraint::Length(2),   // Help
+            Constraint::Length(4), // Header
+            Constraint::Length(1), // Spacer
+            Constraint::Min(10),   // Patch list
+            Constraint::Length(4), // Compatibility info
+            Constraint::Length(2), // Help
         ])
         .split(area);
 
@@ -114,9 +114,7 @@ impl Widget for &PatchSelectScreen {
             height: chunks[2].height,
         };
 
-        let panel = Panel::new()
-            .title("PATCHES")
-            .focused(true);
+        let panel = Panel::new().title("PATCHES").focused(true);
         panel.render(list_area, buf);
 
         // Patch list content
@@ -187,7 +185,11 @@ impl Widget for &PatchSelectScreen {
             selected, compatible, self.target_version
         );
 
-        let all_ok = self.patches.iter().filter(|p| p.selected).all(|p| p.compatible);
+        let all_ok = self
+            .patches
+            .iter()
+            .filter(|p| p.selected)
+            .all(|p| p.compatible);
         let compat_style = if all_ok && selected > 0 {
             theme::success()
         } else if selected == 0 {
@@ -195,7 +197,12 @@ impl Widget for &PatchSelectScreen {
         } else {
             theme::warning()
         };
-        buf.set_string(compat_area.x + 2, compat_area.y + 1, &compat_msg, compat_style);
+        buf.set_string(
+            compat_area.x + 2,
+            compat_area.y + 1,
+            &compat_msg,
+            compat_style,
+        );
 
         // Help text
         let help = "[SPACE] Toggle  [A] All  [N] None  [ENTER] Apply  [ESC] Back  [Q] Quit";
