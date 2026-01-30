@@ -1,10 +1,15 @@
 //! Application state machine for CODEX//XTREME TUI
 
 use crate::core;
+use crate::tui::screens::BuildPhase;
 use crate::tui::screens::*;
+use codex_patcher::{apply_patches, load_from_path, PatchResult};
 use crossterm::event::KeyCode;
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Instant;
 
 /// Current screen
 pub enum Screen {
@@ -45,6 +50,20 @@ impl Widget for &Screen {
     }
 }
 
+/// Build progress message from background thread
+pub enum BuildMessage {
+    Phase(BuildPhase),
+    Progress(f64),
+    CurrentItem(String),
+    Log(String),
+    PatchApplied(String),
+    Complete {
+        binary_path: String,
+        build_time: String,
+    },
+    Error(String),
+}
+
 /// Application state
 pub struct App {
     pub screen: Screen,
@@ -53,7 +72,9 @@ pub struct App {
     // Collected data
     pub selected_repo: Option<PathBuf>,
     pub selected_version: Option<String>,
-    pub selected_patches: Vec<String>,
+    pub selected_patches: Vec<PathBuf>, // Now stores patch file paths
+    // Background task channels
+    build_rx: Option<mpsc::Receiver<BuildMessage>>,
 }
 
 impl App {
@@ -101,6 +122,7 @@ impl App {
             selected_repo: None,
             selected_version: None,
             selected_patches: Vec::new(),
+            build_rx: None,
         }
     }
 
@@ -131,6 +153,51 @@ impl App {
                 }
             }
         }
+
+        // Handle build progress from background thread
+        if let Some(rx) = self.build_rx.take() {
+            // Collect all available messages first
+            let mut messages = Vec::new();
+            while let Ok(msg) = rx.try_recv() {
+                messages.push(msg);
+            }
+
+            // Check if we're done
+            let mut done = false;
+            for msg in &messages {
+                if matches!(msg, BuildMessage::Complete { .. } | BuildMessage::Error(_)) {
+                    done = true;
+                    break;
+                }
+            }
+
+            // Process messages
+            if let Screen::Build(ref mut screen) = self.screen {
+                for msg in messages {
+                    match msg {
+                        BuildMessage::Phase(phase) => screen.set_phase(phase),
+                        BuildMessage::Progress(p) => screen.set_progress(p),
+                        BuildMessage::CurrentItem(item) => screen.set_current_item(item),
+                        BuildMessage::Log(line) => screen.add_log(line),
+                        BuildMessage::PatchApplied(name) => screen.add_patch(name),
+                        BuildMessage::Complete {
+                            binary_path,
+                            build_time,
+                        } => {
+                            screen.set_complete(binary_path, build_time);
+                        }
+                        BuildMessage::Error(err) => {
+                            screen.set_error(err);
+                        }
+                    }
+                }
+            }
+
+            // Put receiver back if not done
+            if !done {
+                self.build_rx = Some(rx);
+            }
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyCode) {
@@ -155,7 +222,7 @@ impl App {
             Screen::Cloning(_) => {}
             Screen::VersionSelect(_) => self.transition_to_repo_select(),
             Screen::PatchSelect(_) => {
-                // Would go back to version select
+                self.transition_to_version_select();
             }
             Screen::Build(s) if s.is_complete() || s.is_error() => {
                 self.should_quit = true;
@@ -236,20 +303,49 @@ impl App {
                 KeyCode::Char('a') | KeyCode::Char('A') => screen.select_all(),
                 KeyCode::Char('n') | KeyCode::Char('N') => screen.select_none(),
                 KeyCode::Enter => {
-                    self.selected_patches = screen
+                    // Collect patch names first to avoid borrow issues
+                    let patch_names: Vec<String> = screen
                         .selected_patches()
                         .iter()
                         .map(|p| p.name.clone())
                         .collect();
-                    self.transition_to_build();
+
+                    // Now resolve paths (no longer borrowing screen)
+                    self.selected_patches = patch_names
+                        .iter()
+                        .filter_map(|name| self.resolve_patch_path(name))
+                        .collect();
+                    self.start_build();
                 }
                 _ => {}
             },
 
-            Screen::Build(screen) => {
-                if screen.is_complete() || screen.is_error() {
+            Screen::Build(screen) => match key {
+                KeyCode::Char('r') | KeyCode::Char('R') if screen.is_error() => {
+                    // Retry build
+                    self.start_build();
+                }
+                _ if screen.is_complete() || screen.is_error() => {
                     self.should_quit = true;
                 }
+                _ => {}
+            },
+        }
+    }
+
+    /// Resolve patch name to full path
+    fn resolve_patch_path(&self, name: &str) -> Option<PathBuf> {
+        let patches_dir = core::find_patches_dir().ok()?;
+        let path = patches_dir.join(format!("{}.toml", name));
+        if path.exists() {
+            Some(path)
+        } else {
+            // Try without adding .toml
+            let path = patches_dir.join(name);
+            if path.exists() {
+                Some(path)
+            } else {
+                None
             }
         }
     }
@@ -285,10 +381,6 @@ impl App {
         screen.set_progress("Starting git clone...");
 
         self.screen = Screen::Cloning(screen);
-
-        // Note: In a real implementation, we'd spawn an async task to run git clone
-        // and update the screen's progress. For now, we'll do it synchronously
-        // on the next tick. See tick() method.
     }
 
     fn transition_to_repo_select(&mut self) {
@@ -301,7 +393,7 @@ impl App {
                 path: r.path,
                 branch: r.branch,
                 age: r.age,
-                is_modified: false, // Could check git status
+                is_modified: false,
             })
             .collect();
 
@@ -327,7 +419,7 @@ impl App {
                         date: r.published,
                         is_latest: i == 0,
                         is_current,
-                        changelog: Vec::new(), // Could fetch from GitHub API
+                        changelog: Vec::new(),
                     }
                 })
                 .collect();
@@ -346,7 +438,7 @@ impl App {
             .into_iter()
             .map(|(path, config)| {
                 let name = path
-                    .file_name()
+                    .file_stem()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| config.meta.name.clone());
 
@@ -363,7 +455,7 @@ impl App {
                         .description
                         .unwrap_or_else(|| config.meta.name.clone()),
                     selected: auto_select,
-                    compatible: true, // Could check version_range
+                    compatible: true,
                 }
             })
             .collect();
@@ -371,11 +463,256 @@ impl App {
         self.screen = Screen::PatchSelect(PatchSelectScreen::new(patches, version));
     }
 
-    fn transition_to_build(&mut self) {
+    fn start_build(&mut self) {
         let mut build = BuildScreen::new();
-        for patch in &self.selected_patches {
-            build.add_patch(patch);
+
+        // Add patch names to display
+        for patch_path in &self.selected_patches {
+            if let Some(name) = patch_path.file_stem() {
+                build.add_patch(name.to_string_lossy().to_string());
+            }
         }
+
         self.screen = Screen::Build(build);
+
+        // Get build parameters
+        let repo_path = match &self.selected_repo {
+            Some(p) => p.clone(),
+            None => {
+                if let Screen::Build(ref mut s) = self.screen {
+                    s.set_error("No repository selected".to_string());
+                }
+                return;
+            }
+        };
+
+        let version = match &self.selected_version {
+            Some(v) => v.clone(),
+            None => {
+                if let Screen::Build(ref mut s) = self.screen {
+                    s.set_error("No version selected".to_string());
+                }
+                return;
+            }
+        };
+
+        let patches = self.selected_patches.clone();
+        let workspace = repo_path.join(core::CODEX_RS_SUBDIR);
+
+        // Create channel for progress updates
+        let (tx, rx) = mpsc::channel();
+        self.build_rx = Some(rx);
+
+        // Spawn background build thread
+        thread::spawn(move || {
+            run_build(tx, repo_path, workspace, version, patches);
+        });
     }
+}
+
+/// Background build process
+fn run_build(
+    tx: mpsc::Sender<BuildMessage>,
+    repo_path: PathBuf,
+    workspace: PathBuf,
+    version: String,
+    patches: Vec<PathBuf>,
+) {
+    let start_time = Instant::now();
+
+    // Send helper
+    let send = |msg: BuildMessage| {
+        let _ = tx.send(msg);
+    };
+
+    // Phase 1: Checkout version
+    send(BuildMessage::Phase(BuildPhase::Patching));
+    send(BuildMessage::CurrentItem(format!(
+        "Checking out {}",
+        version
+    )));
+    send(BuildMessage::Log(format!("git checkout {}", version)));
+
+    if let Err(e) = core::checkout_version(&repo_path, &version) {
+        send(BuildMessage::Error(format!("Checkout failed: {}", e)));
+        return;
+    }
+    send(BuildMessage::Progress(0.1));
+    send(BuildMessage::Log("Checkout complete".to_string()));
+
+    // Phase 2: Apply patches
+    if !patches.is_empty() {
+        send(BuildMessage::CurrentItem("Applying patches...".to_string()));
+
+        // Read workspace version for patch compatibility
+        let workspace_version =
+            read_workspace_version(&workspace).unwrap_or_else(|_| "0.0.0".to_string());
+
+        let total_patches = patches.len();
+        for (i, patch_path) in patches.iter().enumerate() {
+            let patch_name = patch_path
+                .file_stem()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            send(BuildMessage::CurrentItem(format!(
+                "Applying {}...",
+                patch_name
+            )));
+            send(BuildMessage::Log(format!(
+                "Loading {}",
+                patch_path.display()
+            )));
+
+            match load_from_path(patch_path) {
+                Ok(config) => {
+                    let results = apply_patches(&config, &workspace, &workspace_version);
+
+                    let mut applied_count = 0;
+                    for (patch_id, result) in results {
+                        match result {
+                            Ok(PatchResult::Applied { file }) => {
+                                send(BuildMessage::Log(format!(
+                                    "  ✓ {} → {}",
+                                    patch_id,
+                                    file.display()
+                                )));
+                                applied_count += 1;
+                            }
+                            Ok(PatchResult::AlreadyApplied { .. }) => {
+                                send(BuildMessage::Log(format!(
+                                    "  ○ {} (already applied)",
+                                    patch_id
+                                )));
+                            }
+                            Ok(PatchResult::SkippedVersion { reason }) => {
+                                send(BuildMessage::Log(format!("  ⊘ {} ({})", patch_id, reason)));
+                            }
+                            Ok(PatchResult::Failed { reason, .. }) => {
+                                send(BuildMessage::Log(format!("  ✗ {} ({})", patch_id, reason)));
+                            }
+                            Err(e) => {
+                                send(BuildMessage::Log(format!("  ✗ {} ({})", patch_id, e)));
+                            }
+                        }
+                    }
+
+                    if applied_count > 0 {
+                        send(BuildMessage::PatchApplied(patch_name));
+                    }
+                }
+                Err(e) => {
+                    send(BuildMessage::Log(format!("  ✗ Failed to load: {}", e)));
+                }
+            }
+
+            let progress = 0.1 + (0.2 * (i + 1) as f64 / total_patches as f64);
+            send(BuildMessage::Progress(progress));
+        }
+    }
+
+    // Phase 3: Compile
+    send(BuildMessage::Phase(BuildPhase::Compiling));
+    send(BuildMessage::Progress(0.3));
+    send(BuildMessage::CurrentItem(
+        "Building codex-cli...".to_string(),
+    ));
+    send(BuildMessage::Log(
+        "cargo build --release -p codex-cli".to_string(),
+    ));
+
+    // Run cargo build
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.current_dir(&workspace)
+        .args(["build", "--release", "-p", "codex-cli"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    match cmd.spawn() {
+        Ok(mut child) => {
+            // Read stderr for progress
+            if let Some(stderr) = child.stderr.take() {
+                use std::io::{BufRead, BufReader};
+                let reader = BufReader::new(stderr);
+                let mut compile_count = 0;
+
+                for line in reader.lines().map_while(Result::ok) {
+                    // Parse cargo output for progress
+                    if line.contains("Compiling") {
+                        compile_count += 1;
+                        // Estimate ~100 crates total
+                        let progress = 0.3 + (0.6 * (compile_count as f64 / 100.0).min(1.0));
+                        send(BuildMessage::Progress(progress));
+
+                        // Extract crate name
+                        if let Some(crate_name) = line.split_whitespace().nth(1) {
+                            send(BuildMessage::CurrentItem(format!(
+                                "Compiling {}...",
+                                crate_name
+                            )));
+                        }
+                    } else if line.contains("error") || line.contains("Error") {
+                        send(BuildMessage::Log(line));
+                    }
+                }
+            }
+
+            match child.wait() {
+                Ok(status) if status.success() => {
+                    send(BuildMessage::Progress(0.95));
+                }
+                Ok(status) => {
+                    send(BuildMessage::Error(format!(
+                        "Build failed with exit code: {:?}",
+                        status.code()
+                    )));
+                    return;
+                }
+                Err(e) => {
+                    send(BuildMessage::Error(format!("Build process error: {}", e)));
+                    return;
+                }
+            }
+        }
+        Err(e) => {
+            send(BuildMessage::Error(format!("Failed to start cargo: {}", e)));
+            return;
+        }
+    }
+
+    // Find the built binary
+    let binary_path = workspace
+        .join("target/release/codex")
+        .to_string_lossy()
+        .to_string();
+
+    let elapsed = start_time.elapsed();
+    let build_time = format!("{:.1}s", elapsed.as_secs_f64());
+
+    send(BuildMessage::Phase(BuildPhase::Complete));
+    send(BuildMessage::Progress(1.0));
+    send(BuildMessage::Complete {
+        binary_path,
+        build_time,
+    });
+}
+
+/// Read workspace version from Cargo.toml
+fn read_workspace_version(workspace: &std::path::Path) -> anyhow::Result<String> {
+    let cargo_toml = workspace.join("Cargo.toml");
+    let contents = std::fs::read_to_string(&cargo_toml)?;
+
+    // Try to parse version from workspace package
+    for line in contents.lines() {
+        if line.trim().starts_with("version") && line.contains('=') {
+            if let Some(version) = line.split('=').nth(1) {
+                let version = version.trim().trim_matches('"').trim_matches('\'');
+                if !version.is_empty() {
+                    return Ok(version.to_string());
+                }
+            }
+        }
+    }
+
+    Ok("0.0.0".to_string())
 }
