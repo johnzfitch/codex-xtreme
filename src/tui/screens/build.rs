@@ -49,7 +49,7 @@ use ratatui::{
 pub enum BuildPhase {
     Patching,
     Compiling,
-    Optimizing,
+    Installing,
     Complete,
     Error,
 }
@@ -59,7 +59,7 @@ impl BuildPhase {
         match self {
             BuildPhase::Patching => "PATCHING",
             BuildPhase::Compiling => "COMPILING",
-            BuildPhase::Optimizing => "OPTIMIZING",
+            BuildPhase::Installing => "INSTALLING",
             BuildPhase::Complete => "COMPLETE",
             BuildPhase::Error => "ERROR",
         }
@@ -69,7 +69,7 @@ impl BuildPhase {
         match self {
             BuildPhase::Patching => jp::INJECTING,
             BuildPhase::Compiling => jp::COMPILING,
-            BuildPhase::Optimizing => "最適化中",
+            BuildPhase::Installing => "インストール中",
             BuildPhase::Complete => jp::BUILD_COMPLETE,
             BuildPhase::Error => "エラー",
         }

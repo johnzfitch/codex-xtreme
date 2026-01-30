@@ -783,10 +783,87 @@ fn run_build(
     }
 
     // Find the built binary (profile xtreme outputs to target/xtreme/)
-    let binary_path = workspace
-        .join(format!("target/{}/codex", profile))
-        .to_string_lossy()
-        .to_string();
+    let binary_path = workspace.join(format!("target/{}/codex", profile));
+
+    // Phase 4: Verify
+    send(BuildMessage::Phase(BuildPhase::Installing)); // Reuse as "Verifying"
+    send(BuildMessage::Progress(0.95));
+    send(BuildMessage::CurrentItem("Verifying build...".to_string()));
+    send(BuildMessage::Log("Running codex --version".to_string()));
+
+    // Quick verification - just check the binary runs
+    if binary_path.exists() {
+        match std::process::Command::new(&binary_path)
+            .arg("--version")
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                let version = String::from_utf8_lossy(&output.stdout);
+                send(BuildMessage::Log(format!("  ✓ {}", version.trim())));
+            }
+            Ok(_) => {
+                send(BuildMessage::Log("  ⚠ Binary runs but --version failed".to_string()));
+            }
+            Err(e) => {
+                send(BuildMessage::Log(format!("  ✗ Failed to run binary: {}", e)));
+            }
+        }
+    } else {
+        send(BuildMessage::Log(format!(
+            "  ✗ Binary not found at {}",
+            binary_path.display()
+        )));
+    }
+
+    // Phase 5: Install (symlink to ~/.local/bin)
+    send(BuildMessage::Progress(0.98));
+    send(BuildMessage::CurrentItem("Installing to PATH...".to_string()));
+
+    let local_bin = dirs::home_dir()
+        .map(|h| h.join(".local/bin"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/usr/local/bin"));
+
+    // Create ~/.local/bin if it doesn't exist
+    if !local_bin.exists() {
+        let _ = std::fs::create_dir_all(&local_bin);
+    }
+
+    let symlink_path = local_bin.join("codex");
+
+    // Remove old symlink if exists
+    if symlink_path.exists() || symlink_path.is_symlink() {
+        let _ = std::fs::remove_file(&symlink_path);
+    }
+
+    // Create symlink
+    #[cfg(unix)]
+    {
+        match std::os::unix::fs::symlink(&binary_path, &symlink_path) {
+            Ok(_) => {
+                send(BuildMessage::Log(format!(
+                    "  ✓ Linked {} → {}",
+                    symlink_path.display(),
+                    binary_path.display()
+                )));
+            }
+            Err(e) => {
+                send(BuildMessage::Log(format!(
+                    "  ⚠ Failed to create symlink: {} (run manually: ln -sf {} {})",
+                    e,
+                    binary_path.display(),
+                    symlink_path.display()
+                )));
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        send(BuildMessage::Log(format!(
+            "  ⚠ Windows: Add {} to your PATH manually",
+            binary_path.display()
+        )));
+    }
 
     let elapsed = start_time.elapsed();
     let build_time = format!("{:.1}s", elapsed.as_secs_f64());
@@ -794,7 +871,7 @@ fn run_build(
     send(BuildMessage::Phase(BuildPhase::Complete));
     send(BuildMessage::Progress(1.0));
     send(BuildMessage::Complete {
-        binary_path,
+        binary_path: binary_path.to_string_lossy().to_string(),
         build_time,
     });
 }
