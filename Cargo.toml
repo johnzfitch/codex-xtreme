@@ -10,10 +10,18 @@ keywords = ["codex", "cli", "build", "wizard", "patch"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
-# Patch system - from GitHub
-codex-patcher = { git = "https://github.com/johnzfitch/codex-patcher" }
+# Patch system - local path for development, GitHub for release
+codex-patcher = { path = "../codex-patcher" }
+# codex-patcher = { git = "https://github.com/johnzfitch/codex-patcher" }
 
-# UI - this one crate replaces ratatui + crossterm + indicatif
+# TUI framework - Neo Tokyo XTREME edition
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros", "process", "io-util"] }
+rand = "0.8"
+unicode-width = "0.2"
+
+# Keep cliclack for fallback/simple prompts
 cliclack = "0.3"
 
 # Cargo build output parsing
@@ -49,3 +57,11 @@ dirs = "5"
 # Logging/tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[bin]]
+name = "codex-xtreme"
+path = "src/main.rs"
+
+[[bin]]
+name = "cx"
+path = "src/bin/cx.rs"
