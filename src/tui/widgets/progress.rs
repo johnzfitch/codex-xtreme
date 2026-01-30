@@ -1,12 +1,7 @@
 //! Animated progress bar with glow effects
 
 use crate::tui::theme::{self, blocks};
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::Style,
-    widgets::Widget,
-};
+use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::Widget};
 
 /// A glowing progress bar
 pub struct ProgressBar {
@@ -51,7 +46,9 @@ impl Widget for ProgressBar {
         // Calculate bar dimensions
         let percentage_width = if self.show_percentage { 6 } else { 0 }; // " 100%"
         let label_width = self.label.as_ref().map(|l| l.len() as u16 + 1).unwrap_or(0);
-        let bar_width = area.width.saturating_sub(percentage_width + label_width + 4);
+        let bar_width = area
+            .width
+            .saturating_sub(percentage_width + label_width + 4);
         let bar_x = area.x + label_width + 2;
 
         // Draw label
@@ -82,7 +79,12 @@ impl Widget for ProgressBar {
             } else if i == filled && partial > 0 {
                 // Partial block
                 let partial_char = blocks::PROGRESS_PARTIAL[partial];
-                buf.set_string(x, area.y, partial_char, Style::default().fg(theme::CYAN_DIM));
+                buf.set_string(
+                    x,
+                    area.y,
+                    partial_char,
+                    Style::default().fg(theme::CYAN_DIM),
+                );
             } else {
                 // Empty
                 buf.set_string(x, area.y, blocks::PROGRESS_EMPTY, theme::dim());
@@ -104,11 +106,13 @@ impl Widget for ProgressBar {
 }
 
 /// Indeterminate spinner progress
+#[allow(dead_code)]
 pub struct Spinner {
     frame: u64,
     label: Option<String>,
 }
 
+#[allow(dead_code)]
 impl Spinner {
     pub fn new() -> Self {
         Self {

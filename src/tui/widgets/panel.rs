@@ -1,12 +1,7 @@
 //! Cyberpunk-styled panel widget
 
 use crate::tui::theme;
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::Style,
-    widgets::Widget,
-};
+use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
 /// A styled panel with customizable borders
 pub struct Panel<'a> {
@@ -77,7 +72,12 @@ impl Widget for Panel<'_> {
         for x in (area.x + 1)..(area.x + area.width - 1) {
             buf.set_string(x, area.y, h.to_string(), border_style);
         }
-        buf.set_string(area.x + area.width - 1, area.y, tr.to_string(), border_style);
+        buf.set_string(
+            area.x + area.width - 1,
+            area.y,
+            tr.to_string(),
+            border_style,
+        );
 
         // Side borders
         for y in (area.y + 1)..(area.y + area.height - 1) {
@@ -86,11 +86,21 @@ impl Widget for Panel<'_> {
         }
 
         // Bottom border
-        buf.set_string(area.x, area.y + area.height - 1, bl.to_string(), border_style);
+        buf.set_string(
+            area.x,
+            area.y + area.height - 1,
+            bl.to_string(),
+            border_style,
+        );
         for x in (area.x + 1)..(area.x + area.width - 1) {
             buf.set_string(x, area.y + area.height - 1, h.to_string(), border_style);
         }
-        buf.set_string(area.x + area.width - 1, area.y + area.height - 1, br.to_string(), border_style);
+        buf.set_string(
+            area.x + area.width - 1,
+            area.y + area.height - 1,
+            br.to_string(),
+            border_style,
+        );
 
         // Title
         if let Some(title) = self.title {
@@ -124,6 +134,7 @@ impl Widget for Panel<'_> {
 }
 
 /// Inner area helper - returns the usable area inside the panel
+#[allow(dead_code)]
 pub fn inner_area(area: Rect) -> Rect {
     if area.width < 4 || area.height < 3 {
         return Rect::default();

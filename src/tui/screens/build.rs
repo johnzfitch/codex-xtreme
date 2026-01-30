@@ -2,6 +2,41 @@
 
 use crate::tui::theme::{self, jp};
 use crate::tui::widgets::{Panel, ProgressBar};
+
+/// Wrap text to fit within max_width, breaking on word boundaries
+fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+
+    for paragraph in text.lines() {
+        if paragraph.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+
+        let mut current_line = String::new();
+        for word in paragraph.split_whitespace() {
+            if current_line.is_empty() {
+                if word.len() > max_width {
+                    // Word is too long, just truncate it
+                    lines.push(word[..max_width].to_string());
+                } else {
+                    current_line = word.to_string();
+                }
+            } else if current_line.len() + 1 + word.len() <= max_width {
+                current_line.push(' ');
+                current_line.push_str(word);
+            } else {
+                lines.push(current_line);
+                current_line = word.to_string();
+            }
+        }
+        if !current_line.is_empty() {
+            lines.push(current_line);
+        }
+    }
+
+    lines
+}
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
@@ -14,7 +49,7 @@ use ratatui::{
 pub enum BuildPhase {
     Patching,
     Compiling,
-    Optimizing,
+    Installing,
     Complete,
     Error,
 }
@@ -24,7 +59,7 @@ impl BuildPhase {
         match self {
             BuildPhase::Patching => "PATCHING",
             BuildPhase::Compiling => "COMPILING",
-            BuildPhase::Optimizing => "OPTIMIZING",
+            BuildPhase::Installing => "INSTALLING",
             BuildPhase::Complete => "COMPLETE",
             BuildPhase::Error => "ERROR",
         }
@@ -34,7 +69,7 @@ impl BuildPhase {
         match self {
             BuildPhase::Patching => jp::INJECTING,
             BuildPhase::Compiling => jp::COMPILING,
-            BuildPhase::Optimizing => "最適化中",
+            BuildPhase::Installing => "インストール中",
             BuildPhase::Complete => jp::BUILD_COMPLETE,
             BuildPhase::Error => "エラー",
         }
@@ -49,9 +84,13 @@ pub struct BuildScreen {
     current_item: String,
     log_lines: Vec<String>,
     patches_applied: Vec<String>,
+    patches_skipped: Vec<(String, String)>, // (name, reason)
     error_message: Option<String>,
     binary_path: Option<String>,
     build_time: Option<String>,
+    // Build info
+    version: String,
+    install_path: String,
 }
 
 impl BuildScreen {
@@ -63,9 +102,12 @@ impl BuildScreen {
             current_item: String::new(),
             log_lines: Vec::new(),
             patches_applied: Vec::new(),
+            patches_skipped: Vec::new(),
             error_message: None,
             binary_path: None,
             build_time: None,
+            version: String::new(),
+            install_path: String::new(),
         }
     }
 
@@ -96,6 +138,18 @@ impl BuildScreen {
 
     pub fn add_patch(&mut self, name: impl Into<String>) {
         self.patches_applied.push(name.into());
+    }
+
+    pub fn add_skipped_patch(&mut self, name: impl Into<String>, reason: impl Into<String>) {
+        self.patches_skipped.push((name.into(), reason.into()));
+    }
+
+    pub fn set_version(&mut self, version: impl Into<String>) {
+        self.version = version.into();
+    }
+
+    pub fn set_install_path(&mut self, path: impl Into<String>) {
+        self.install_path = path.into();
     }
 
     pub fn set_error(&mut self, msg: impl Into<String>) {
@@ -150,27 +204,40 @@ impl Widget for &BuildScreen {
 
 fn render_progress(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
     let chunks = Layout::vertical([
-        Constraint::Length(4),   // Header
-        Constraint::Length(3),   // Progress bar
-        Constraint::Length(2),   // Current item
-        Constraint::Min(8),      // Log output
-        Constraint::Length(2),   // Help
+        Constraint::Length(4), // Header
+        Constraint::Length(4), // Build info (version, path)
+        Constraint::Length(3), // Progress bar
+        Constraint::Length(2), // Current item
+        Constraint::Min(6),    // Log output
+        Constraint::Length(2), // Help
     ])
     .split(area);
 
     // Header with phase
-    let header_line = format!(
-        "░▒▓█ {} //{} █▓▒░",
-        screen.phase.title(),
-        screen.phase.jp()
-    );
+    let header_line = format!("░▒▓█ {} //{} █▓▒░", screen.phase.title(), screen.phase.jp());
     let header_x = area.x + (area.width.saturating_sub(header_line.len() as u16)) / 2;
     buf.set_string(header_x, chunks[0].y + 1, &header_line, theme::title());
+
+    // Build info
+    if !screen.version.is_empty() {
+        let version_line = format!("Version: {}", screen.version);
+        buf.set_string(area.x + 4, chunks[1].y, &version_line, theme::secondary());
+    }
+    if !screen.install_path.is_empty() {
+        let path_line = format!("Target:  {}", screen.install_path);
+        let max_width = area.width.saturating_sub(8) as usize;
+        let display_path = if path_line.len() > max_width && max_width > 3 {
+            format!("{}...", &path_line[..max_width - 3])
+        } else {
+            path_line
+        };
+        buf.set_string(area.x + 4, chunks[1].y + 1, &display_path, theme::muted());
+    }
 
     // Progress bar
     let progress_area = Rect {
         x: area.x + 4,
-        y: chunks[1].y + 1,
+        y: chunks[2].y + 1,
         width: area.width.saturating_sub(8),
         height: 1,
     };
@@ -186,15 +253,15 @@ fn render_progress(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
 
         let line = format!("{} {}", spinner, screen.current_item);
         let x = area.x + 4;
-        buf.set_string(x, chunks[2].y, &line, theme::active());
+        buf.set_string(x, chunks[3].y, &line, theme::active());
     }
 
     // Log panel
     let log_area = Rect {
-        x: chunks[3].x + 2,
-        y: chunks[3].y,
-        width: chunks[3].width.saturating_sub(4),
-        height: chunks[3].height,
+        x: chunks[4].x + 2,
+        y: chunks[4].y,
+        width: chunks[4].width.saturating_sub(4),
+        height: chunks[4].height,
     };
 
     let log_panel = Panel::new().title("OUTPUT");
@@ -202,26 +269,35 @@ fn render_progress(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
 
     // Log lines
     let log_start_y = log_area.y + 1;
-    for (i, line) in screen.log_lines.iter().rev().take(log_area.height.saturating_sub(2) as usize).enumerate() {
+    for (i, line) in screen
+        .log_lines
+        .iter()
+        .rev()
+        .take(log_area.height.saturating_sub(2) as usize)
+        .enumerate()
+    {
         let y = log_start_y + i as u16;
-        let display_line: String = line.chars().take(log_area.width.saturating_sub(4) as usize).collect();
+        let display_line: String = line
+            .chars()
+            .take(log_area.width.saturating_sub(4) as usize)
+            .collect();
         buf.set_string(log_area.x + 2, y, &display_line, theme::code());
     }
 
     // Help
     let help = "Building... Press [Q] to cancel";
     let help_x = area.x + (area.width.saturating_sub(help.len() as u16)) / 2;
-    buf.set_string(help_x, chunks[4].y, help, theme::muted());
+    buf.set_string(help_x, chunks[5].y, help, theme::muted());
 }
 
 fn render_complete(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
     let chunks = Layout::vertical([
         Constraint::Min(2),
-        Constraint::Length(6),   // Banner
-        Constraint::Length(2),   // Spacer
-        Constraint::Length(5),   // Binary info
-        Constraint::Min(5),      // Patches
-        Constraint::Length(2),   // Exit prompt
+        Constraint::Length(6), // Banner
+        Constraint::Length(2), // Spacer
+        Constraint::Length(5), // Binary info
+        Constraint::Min(5),    // Patches
+        Constraint::Length(2), // Exit prompt
     ])
     .split(area);
 
@@ -245,7 +321,9 @@ fn render_complete(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
         title_x,
         banner_area.y + 1,
         &title,
-        Style::default().fg(theme::GREEN).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme::GREEN)
+            .add_modifier(Modifier::BOLD),
     );
 
     let jp_title = jp::BUILD_COMPLETE;
@@ -254,10 +332,20 @@ fn render_complete(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
 
     // Binary info
     if let Some(ref path) = screen.binary_path {
-        buf.set_string(area.x + 8, chunks[3].y, format!("Binary: {}", path), theme::normal());
+        buf.set_string(
+            area.x + 8,
+            chunks[3].y,
+            format!("Binary: {}", path),
+            theme::normal(),
+        );
     }
     if let Some(ref time) = screen.build_time {
-        buf.set_string(area.x + 8, chunks[3].y + 1, format!("Time:   {}", time), theme::normal());
+        buf.set_string(
+            area.x + 8,
+            chunks[3].y + 1,
+            format!("Time:   {}", time),
+            theme::normal(),
+        );
     }
 
     // Patches panel
@@ -268,18 +356,52 @@ fn render_complete(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
         height: chunks[4].height,
     };
 
-    let patches_panel = Panel::new().title("INSTALLED PATCHES");
+    let title = if screen.patches_skipped.is_empty() {
+        "INSTALLED PATCHES"
+    } else {
+        "PATCH RESULTS"
+    };
+    let patches_panel = Panel::new().title(title);
     patches_panel.render(patches_area, buf);
 
-    for (i, patch) in screen.patches_applied.iter().take(patches_area.height.saturating_sub(2) as usize).enumerate() {
+    let mut y_offset = 0u16;
+    let max_lines = patches_area.height.saturating_sub(2) as usize;
+
+    // Applied patches
+    for patch in screen.patches_applied.iter().take(max_lines) {
         let line = format!("  ✓ {}", patch);
-        buf.set_string(patches_area.x + 2, patches_area.y + 1 + i as u16, &line, theme::success());
+        buf.set_string(
+            patches_area.x + 2,
+            patches_area.y + 1 + y_offset,
+            &line,
+            theme::success(),
+        );
+        y_offset += 1;
+    }
+
+    // Skipped patches
+    let remaining_lines = max_lines.saturating_sub(y_offset as usize);
+    for (name, reason) in screen.patches_skipped.iter().take(remaining_lines) {
+        let line = format!("  ⊘ {} ({})", name, reason);
+        let max_width = patches_area.width.saturating_sub(4) as usize;
+        let display = if line.len() > max_width {
+            format!("{}...", &line[..max_width.saturating_sub(3)])
+        } else {
+            line
+        };
+        buf.set_string(
+            patches_area.x + 2,
+            patches_area.y + 1 + y_offset,
+            &display,
+            theme::muted(),
+        );
+        y_offset += 1;
     }
 
     // Exit prompt
     let prompt = "Press any key to exit...";
     let prompt_x = area.x + (area.width.saturating_sub(prompt.len() as u16)) / 2;
-    let prompt_style = if (screen.frame / 30) % 2 == 0 {
+    let prompt_style = if (screen.frame / 30).is_multiple_of(2) {
         theme::muted()
     } else {
         theme::secondary()
@@ -290,9 +412,9 @@ fn render_complete(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
 fn render_error(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
     let chunks = Layout::vertical([
         Constraint::Min(2),
-        Constraint::Length(6),   // Error banner
-        Constraint::Min(8),      // Error message
-        Constraint::Length(2),   // Help
+        Constraint::Length(6), // Error banner
+        Constraint::Min(8),    // Error message
+        Constraint::Length(2), // Help
     ])
     .split(area);
 
@@ -312,12 +434,7 @@ fn render_error(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
 
     let title = "BUILD FAILED";
     let title_x = banner_x + (banner_width.saturating_sub(title.len() as u16)) / 2;
-    buf.set_string(
-        title_x,
-        banner_area.y + 1,
-        title,
-        theme::error(),
-    );
+    buf.set_string(title_x, banner_area.y + 1, title, theme::error());
 
     // Error message
     if let Some(ref msg) = screen.error_message {
@@ -331,10 +448,21 @@ fn render_error(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
         let error_panel = Panel::new().title("ERROR");
         error_panel.render(msg_area, buf);
 
-        // Word wrap would be nice here
-        let lines: Vec<&str> = msg.lines().collect();
-        for (i, line) in lines.iter().take(msg_area.height.saturating_sub(2) as usize).enumerate() {
-            buf.set_string(msg_area.x + 2, msg_area.y + 1 + i as u16, *line, theme::normal());
+        // Word wrap the error message
+        let max_line_width = msg_area.width.saturating_sub(4) as usize;
+        let wrapped_lines = wrap_text(msg, max_line_width);
+
+        for (i, line) in wrapped_lines
+            .iter()
+            .take(msg_area.height.saturating_sub(2) as usize)
+            .enumerate()
+        {
+            buf.set_string(
+                msg_area.x + 2,
+                msg_area.y + 1 + i as u16,
+                line,
+                theme::normal(),
+            );
         }
     }
 

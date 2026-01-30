@@ -1,12 +1,7 @@
 //! CRT scanline effect
 
 use crate::tui::theme;
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::Style,
-    widgets::Widget,
-};
+use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::Widget};
 
 /// Subtle CRT scanline overlay
 pub struct Scanlines {
