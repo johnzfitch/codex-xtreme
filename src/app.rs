@@ -704,14 +704,18 @@ fn run_build(
     send(BuildMessage::CurrentItem(
         "Building codex-cli...".to_string(),
     ));
-    send(BuildMessage::Log(
-        "cargo build --release -p codex-cli".to_string(),
-    ));
+
+    // Use xtreme profile (thin LTO) if available, otherwise release
+    let profile = "xtreme";
+    send(BuildMessage::Log(format!(
+        "cargo build --profile {} -p codex-cli",
+        profile
+    )));
 
     // Run cargo build
     let mut cmd = std::process::Command::new("cargo");
     cmd.current_dir(&workspace)
-        .args(["build", "--release", "-p", "codex-cli"])
+        .args(["build", "--profile", profile, "-p", "codex-cli"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
@@ -778,9 +782,9 @@ fn run_build(
         }
     }
 
-    // Find the built binary
+    // Find the built binary (profile xtreme outputs to target/xtreme/)
     let binary_path = workspace
-        .join("target/release/codex")
+        .join(format!("target/{}/codex", profile))
         .to_string_lossy()
         .to_string();
 
