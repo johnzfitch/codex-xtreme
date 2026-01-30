@@ -42,7 +42,7 @@ jobs:
         run: cargo test --target ${{ matrix.target }}
 
       - name: Test CPU detection
-        run: cargo run --target ${{ matrix.target }} -- --detect-cpu-only
+        run: cargo run --target ${{ matrix.target }} --bin codex-xtreme -- --detect-cpu-only
 
   clippy:
     name: Clippy
