@@ -896,13 +896,50 @@ fn run_build(
                     "  ✓ Copied to {}",
                     dest_path.display()
                 )));
-                send(BuildMessage::Log(
-                    "  ⚠ Add to PATH via System Properties > Environment Variables".to_string(),
-                ));
-                send(BuildMessage::Log(format!(
-                    "    Or run: setx PATH \"%PATH%;{}\"",
-                    install_dir.display()
-                )));
+
+                // Check if already in PATH
+                let path_var = std::env::var("PATH").unwrap_or_default();
+                let install_dir_str = install_dir.to_string_lossy();
+
+                if path_var.contains(install_dir_str.as_ref()) {
+                    send(BuildMessage::Log("  ✓ Already in PATH".to_string()));
+                } else {
+                    // Try setx automatically
+                    send(BuildMessage::Log("  Adding to PATH...".to_string()));
+
+                    let setx_result = std::process::Command::new("setx")
+                        .args(["PATH", &format!("{};{}", path_var, install_dir.display())])
+                        .output();
+
+                    match setx_result {
+                        Ok(output) if output.status.success() => {
+                            send(BuildMessage::Log(
+                                "  ✓ Added to PATH (restart terminal to use)".to_string()
+                            ));
+                        }
+                        _ => {
+                            // setx failed - show manual options
+                            send(BuildMessage::Log(
+                                "  ⚠ Auto-add failed. Manual options:".to_string()
+                            ));
+                            send(BuildMessage::Log(String::new()));
+                            send(BuildMessage::Log(
+                                "  [PowerShell] Paste this command:".to_string()
+                            ));
+                            send(BuildMessage::Log(format!(
+                                "    [Environment]::SetEnvironmentVariable(\"Path\", $env:Path + \";{}\", \"User\")",
+                                install_dir.display()
+                            )));
+                            send(BuildMessage::Log(String::new()));
+                            send(BuildMessage::Log(
+                                "  [Settings] Windows Settings → System → About →".to_string()
+                            ));
+                            send(BuildMessage::Log(
+                                "    Advanced system settings → Environment Variables".to_string()
+                            ));
+                        }
+                    }
+                }
             }
             Err(e) => {
                 send(BuildMessage::Log(format!(
