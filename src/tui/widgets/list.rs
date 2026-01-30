@@ -83,7 +83,7 @@ impl ListItem {
     }
 }
 
-/// A selectable list with cursor animation
+/// A selectable list with cursor animation and viewport scrolling
 pub struct SelectList<'a> {
     items: &'a [ListItem],
     selected: usize,
@@ -115,13 +115,33 @@ impl<'a> SelectList<'a> {
         self.show_indices = show;
         self
     }
+
+    /// Calculate viewport offset to keep selected item visible
+    fn calculate_viewport(&self, area_height: u16) -> usize {
+        if self.items.is_empty() {
+            return 0;
+        }
+
+        // Calculate how many items can fit (rough estimate: 1-2 lines per item)
+        let items_visible = (area_height / 2).max(1) as usize;
+
+        // Keep selected in the middle third when possible
+        if self.selected < items_visible / 2 {
+            0
+        } else if self.selected >= self.items.len().saturating_sub(items_visible / 2) {
+            self.items.len().saturating_sub(items_visible)
+        } else {
+            self.selected.saturating_sub(items_visible / 2)
+        }
+    }
 }
 
 impl Widget for SelectList<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let mut y = area.y;
+        let viewport_offset = self.calculate_viewport(area.height);
 
-        for (idx, item) in self.items.iter().enumerate() {
+        for (idx, item) in self.items.iter().enumerate().skip(viewport_offset) {
             if y >= area.y + area.height {
                 break;
             }

@@ -13,14 +13,14 @@ categories = ["command-line-utilities", "development-tools"]
 # Patch system - GitHub dependency for CI; use `path = "../codex-patcher"` locally
 codex-patcher = { git = "https://github.com/johnzfitch/codex-patcher", rev = "50f5c71" }
 
-# TUI framework - Neo Tokyo XTREME edition
+# TUI framework
 ratatui = "0.29"
 crossterm = "0.28"
-tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros", "process", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
 rand = "0.8"
 unicode-width = "0.2"
 
-# Keep cliclack for fallback/simple prompts
+# CLI prompts (cliclack for main wizard)
 cliclack = "0.3"
 
 # Cargo build output parsing
@@ -29,20 +29,14 @@ cargo_metadata = "0.18"
 # Error handling
 anyhow = "1"
 
-# Check for tools (mold, etc)
+# Tool detection (mold, git, etc)
 which = "6"
 
 # Rustc version detection
 rustc_version = "0.4"
 
-# Time formatting for repo age
-chrono = "0.4"
-
 # Path expansion (~)
 shellexpand = "3"
-
-# Optional: colored output outside cliclack
-console = "0.15"
 
 # Ctrl-C handling
 ctrlc = "3"

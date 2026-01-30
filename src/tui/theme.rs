@@ -202,3 +202,25 @@ pub const BANNER_LINES: &[&str] = &[
 
 /// Banner width for centering
 pub const BANNER_WIDTH: u16 = 43;
+
+// ============================================================================
+// Layout Utilities
+// ============================================================================
+
+/// Truncate string to max width, adding "..." if truncated
+pub fn truncate_str(s: &str, max_width: usize) -> String {
+    if s.len() <= max_width {
+        s.to_string()
+    } else if max_width > 3 {
+        format!("{}...", &s[..max_width - 3])
+    } else if max_width > 0 {
+        s[..max_width].to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Calculate centered x position for content of given width
+pub fn center_x(area_x: u16, area_width: u16, content_width: u16) -> u16 {
+    area_x + area_width.saturating_sub(content_width) / 2
+}

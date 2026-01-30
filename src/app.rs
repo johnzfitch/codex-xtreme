@@ -19,6 +19,7 @@ pub enum Screen {
     Cloning(CloneScreen),
     VersionSelect(VersionSelectScreen),
     PatchSelect(PatchSelectScreen),
+    BuildConfig(BuildConfigScreen),
     Build(BuildScreen),
 }
 
@@ -31,6 +32,7 @@ impl Screen {
             Screen::Cloning(s) => s.tick(),
             Screen::VersionSelect(s) => s.tick(),
             Screen::PatchSelect(s) => s.tick(),
+            Screen::BuildConfig(s) => s.tick(),
             Screen::Build(s) => s.tick(),
         }
     }
@@ -45,6 +47,7 @@ impl Widget for &Screen {
             Screen::Cloning(s) => s.render(area, buf),
             Screen::VersionSelect(s) => s.render(area, buf),
             Screen::PatchSelect(s) => s.render(area, buf),
+            Screen::BuildConfig(s) => s.render(area, buf),
             Screen::Build(s) => s.render(area, buf),
         }
     }
@@ -57,6 +60,8 @@ pub enum BuildMessage {
     CurrentItem(String),
     Log(String),
     PatchApplied(String),
+    Version(String),
+    InstallPath(String),
     Complete {
         binary_path: String,
         build_time: String,
@@ -129,9 +134,9 @@ impl App {
     pub fn tick(&mut self) {
         self.screen.tick();
 
-        // Auto-advance from boot when complete
+        // Auto-advance from boot after countdown
         if let Screen::Boot(ref boot) = self.screen {
-            if boot.is_complete() {
+            if boot.should_auto_advance() {
                 self.transition_to_repo_select();
             }
         }
@@ -151,6 +156,13 @@ impl App {
                         screen.set_error(format!("{}", e));
                     }
                 }
+            }
+
+            // Auto-advance after clone completes
+            if screen.should_auto_advance() {
+                let dest = screen.destination().to_string();
+                self.selected_repo = Some(PathBuf::from(&dest));
+                self.transition_to_version_select();
             }
         }
 
@@ -180,6 +192,8 @@ impl App {
                         BuildMessage::CurrentItem(item) => screen.set_current_item(item),
                         BuildMessage::Log(line) => screen.add_log(line),
                         BuildMessage::PatchApplied(name) => screen.add_patch(name),
+                        BuildMessage::Version(v) => screen.set_version(v),
+                        BuildMessage::InstallPath(p) => screen.set_install_path(p),
                         BuildMessage::Complete {
                             binary_path,
                             build_time,
@@ -223,6 +237,9 @@ impl App {
             Screen::VersionSelect(_) => self.transition_to_repo_select(),
             Screen::PatchSelect(_) => {
                 self.transition_to_version_select();
+            }
+            Screen::BuildConfig(_) => {
+                self.transition_to_patch_select();
             }
             Screen::Build(s) if s.is_complete() || s.is_error() => {
                 self.should_quit = true;
@@ -315,6 +332,16 @@ impl App {
                         .iter()
                         .filter_map(|name| self.resolve_patch_path(name))
                         .collect();
+                    self.transition_to_build_config();
+                }
+                _ => {}
+            },
+
+            Screen::BuildConfig(screen) => match key {
+                KeyCode::Up => screen.select_prev(),
+                KeyCode::Down => screen.select_next(),
+                KeyCode::Char(' ') => screen.toggle_current(),
+                KeyCode::Enter => {
                     self.start_build();
                 }
                 _ => {}
@@ -442,25 +469,32 @@ impl App {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| config.meta.name.clone());
 
-                // Auto-select privacy and common patches
-                let name_lower = name.to_lowercase();
-                let auto_select = name_lower.contains("privacy")
-                    || name_lower.contains("subagent")
-                    || name_lower.contains("undo");
-
                 PatchInfo {
                     name,
                     description: config
                         .meta
                         .description
                         .unwrap_or_else(|| config.meta.name.clone()),
-                    selected: auto_select,
+                    selected: true, // Auto-select all patches
                     compatible: true,
                 }
             })
             .collect();
 
         self.screen = Screen::PatchSelect(PatchSelectScreen::new(patches, version));
+    }
+
+    fn transition_to_build_config(&mut self) {
+        let cpu = core::detect_cpu_target();
+        let has_mold = core::has_mold();
+        let has_bolt = core::has_bolt();
+
+        self.screen = Screen::BuildConfig(BuildConfigScreen::new(
+            cpu.display_name(),
+            format!("{:?}", cpu.detected_by),
+            has_mold,
+            has_bolt,
+        ));
     }
 
     fn start_build(&mut self) {
@@ -525,6 +559,29 @@ fn run_build(
         let _ = tx.send(msg);
     };
 
+    // Calculate install path
+    let install_path = dirs::home_dir()
+        .map(|h| h.join(".cargo/bin/codex"))
+        .unwrap_or_else(|| PathBuf::from("~/.cargo/bin/codex"));
+
+    // Send version and install path info
+    send(BuildMessage::Version(version.clone()));
+    send(BuildMessage::InstallPath(install_path.to_string_lossy().to_string()));
+
+    // Get changelog/release notes (git log between current HEAD and target version)
+    if let Ok(output) = std::process::Command::new("git")
+        .current_dir(&repo_path)
+        .args(["log", "--oneline", "-10", &format!("{}..HEAD", version)])
+        .output()
+    {
+        let log_output = String::from_utf8_lossy(&output.stdout);
+        for line in log_output.lines().take(5) {
+            if !line.trim().is_empty() {
+                send(BuildMessage::Log(format!("  {}", line)));
+            }
+        }
+    }
+
     // Phase 1: Checkout version
     send(BuildMessage::Phase(BuildPhase::Patching));
     send(BuildMessage::CurrentItem(format!(
@@ -537,7 +594,7 @@ fn run_build(
         send(BuildMessage::Error(format!("Checkout failed: {}", e)));
         return;
     }
-    send(BuildMessage::Progress(0.1));
+    send(BuildMessage::Progress(0.02));
     send(BuildMessage::Log("Checkout complete".to_string()));
 
     // Phase 2: Apply patches
@@ -606,14 +663,15 @@ fn run_build(
                 }
             }
 
-            let progress = 0.1 + (0.2 * (i + 1) as f64 / total_patches as f64);
+            // Patching is 2-5% of total progress
+            let progress = 0.02 + (0.03 * (i + 1) as f64 / total_patches as f64);
             send(BuildMessage::Progress(progress));
         }
     }
 
     // Phase 3: Compile
     send(BuildMessage::Phase(BuildPhase::Compiling));
-    send(BuildMessage::Progress(0.3));
+    send(BuildMessage::Progress(0.05));
     send(BuildMessage::CurrentItem(
         "Building codex-cli...".to_string(),
     ));
@@ -635,20 +693,31 @@ fn run_build(
                 use std::io::{BufRead, BufReader};
                 let reader = BufReader::new(stderr);
                 let mut compile_count = 0;
+                // Codex has ~350 crates to compile
+                let estimated_total_crates = 350.0;
 
                 for line in reader.lines().map_while(Result::ok) {
                     // Parse cargo output for progress
                     if line.contains("Compiling") {
                         compile_count += 1;
-                        // Estimate ~100 crates total
-                        let progress = 0.3 + (0.6 * (compile_count as f64 / 100.0).min(1.0));
+
+                        // Use ease-out curve: progress slows as we approach end
+                        // Linear progress from crate count
+                        let linear = (compile_count as f64 / estimated_total_crates).min(1.0);
+                        // Apply ease-out: fast start, slow finish (matches real build times)
+                        // Using cubic ease-out: 1 - (1-x)^3
+                        let eased = 1.0 - (1.0 - linear).powi(3);
+                        // Map to 5-98% range
+                        let progress = 0.05 + (0.93 * eased);
                         send(BuildMessage::Progress(progress));
 
                         // Extract crate name
                         if let Some(crate_name) = line.split_whitespace().nth(1) {
                             send(BuildMessage::CurrentItem(format!(
-                                "Compiling {}...",
-                                crate_name
+                                "Compiling {} ({}/{})...",
+                                crate_name,
+                                compile_count,
+                                estimated_total_crates as i32
                             )));
                         }
                     } else if line.contains("error") || line.contains("Error") {
@@ -659,7 +728,7 @@ fn run_build(
 
             match child.wait() {
                 Ok(status) if status.success() => {
-                    send(BuildMessage::Progress(0.95));
+                    send(BuildMessage::Progress(0.98));
                 }
                 Ok(status) => {
                     send(BuildMessage::Error(format!(

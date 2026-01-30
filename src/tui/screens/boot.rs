@@ -1,6 +1,6 @@
 //! Boot sequence screen with animated system checks
 
-use crate::tui::theme::{self, jp, BANNER_LINES, BANNER_WIDTH};
+use crate::tui::theme::{self, jp, truncate_str, BANNER_LINES, BANNER_WIDTH};
 use crate::tui::widgets::ProgressBar;
 use ratatui::{
     buffer::Buffer,
@@ -58,6 +58,8 @@ pub struct BootScreen {
     current_check: usize,
     complete: bool,
     dev_mode: bool,
+    /// Frames since completion (for countdown)
+    complete_frames: u64,
 }
 
 impl BootScreen {
@@ -68,6 +70,7 @@ impl BootScreen {
             current_check: 0,
             complete: false,
             dev_mode,
+            complete_frames: 0,
         }
     }
 
@@ -85,6 +88,8 @@ impl BootScreen {
             status: CheckStatus::Ok, // Pre-completed since we already have the result
             detail: Some(detail.into()),
         });
+        // Advance current_check since this check is already complete
+        self.current_check = self.checks.len();
     }
 
     pub fn tick(&mut self) {
@@ -109,8 +114,33 @@ impl BootScreen {
 
         // Mark complete when all checks done
         if self.current_check >= self.checks.len() && !self.checks.is_empty() {
-            self.complete = true;
+            if !self.complete {
+                self.complete = true;
+                self.complete_frames = 0;
+            } else {
+                self.complete_frames += 1;
+            }
         }
+    }
+
+    /// Returns countdown number (3, 2, 1) or 0 if should advance
+    pub fn countdown(&self) -> u8 {
+        if !self.complete {
+            return 0;
+        }
+        // ~60fps, so 60 frames = 1 second per number
+        let seconds_elapsed = self.complete_frames / 60;
+        match seconds_elapsed {
+            0 => 3,
+            1 => 2,
+            2 => 1,
+            _ => 0, // Ready to advance
+        }
+    }
+
+    /// Returns true when countdown is done and should auto-advance
+    pub fn should_auto_advance(&self) -> bool {
+        self.complete && self.countdown() == 0
     }
 
     pub fn set_check_status(&mut self, idx: usize, status: CheckStatus, detail: Option<String>) {
@@ -216,19 +246,34 @@ impl Widget for &BootScreen {
         let subtitle_x = area.x + (area.width.saturating_sub(subtitle.len() as u16)) / 2;
         buf.set_string(subtitle_x, chunks[2].y, &subtitle, theme::kanji());
 
-        // Status line
-        let status = format!("INITIALIZING SYSTEM //{}", jp::SYSTEM_BOOT);
-        let status_x = area.x + (area.width.saturating_sub(status.len() as u16)) / 2;
-        let status_style = if self.complete {
-            theme::success()
+        // Status line with countdown
+        let (status, status_style) = if self.complete {
+            let countdown = self.countdown();
+            if countdown > 0 {
+                (
+                    format!("SYSTEM READY //{}  [ {} ]", jp::SYSTEM_BOOT, countdown),
+                    theme::success(),
+                )
+            } else {
+                ("LAUNCHING //起動中".to_string(), theme::active())
+            }
         } else {
-            theme::active()
+            (
+                format!("INITIALIZING SYSTEM //{}", jp::SYSTEM_BOOT),
+                theme::active(),
+            )
         };
+        let status_x = area.x + (area.width.saturating_sub(status.len() as u16)) / 2;
         buf.set_string(status_x, chunks[4].y, &status, status_style);
 
-        // System checks
-        let checks_x = area.x + (area.width.saturating_sub(50)) / 2;
+        // System checks - responsive width
+        let max_check_width = area.width.saturating_sub(8).min(80) as usize;
+        let checks_x = area.x + (area.width.saturating_sub(max_check_width as u16)) / 2;
         let checks_y = chunks[6].y;
+
+        // Calculate column widths
+        let name_col_width = 20.min(max_check_width / 3);
+        let detail_col_x = checks_x + name_col_width as u16 + 4;
 
         for (i, check) in self.checks.iter().enumerate() {
             let y = checks_y + i as u16;
@@ -240,18 +285,21 @@ impl Widget for &BootScreen {
             let indicator = check.status.indicator(self.frame);
             buf.set_string(checks_x, y, indicator, check.status.style());
 
-            // Name
+            // Name (truncate if needed)
             let name_style = match check.status {
                 CheckStatus::Pending => theme::muted(),
                 CheckStatus::Checking => theme::active(),
                 _ => theme::normal(),
             };
-            buf.set_string(checks_x + 3, y, &check.name, name_style);
+            let display_name = truncate_str(&check.name, name_col_width);
+            buf.set_string(checks_x + 3, y, &display_name, name_style);
 
-            // Detail (right-aligned)
+            // Detail (truncate to fit remaining space)
             if let Some(ref detail) = check.detail {
-                let detail_x = checks_x + 35;
-                buf.set_string(detail_x, y, detail, theme::secondary());
+                let detail_max_width =
+                    (area.x + area.width).saturating_sub(detail_col_x + 2) as usize;
+                let display_detail = truncate_str(detail, detail_max_width);
+                buf.set_string(detail_col_x, y, &display_detail, theme::secondary());
             }
         }
 

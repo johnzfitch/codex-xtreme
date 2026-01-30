@@ -1,6 +1,6 @@
 //! Patch selection screen with checkboxes
 
-use crate::tui::theme::{self, jp};
+use crate::tui::theme::{self, jp, truncate_str};
 use crate::tui::widgets::Panel;
 use ratatui::{
     buffer::Buffer,
@@ -159,8 +159,12 @@ impl Widget for &PatchSelectScreen {
             };
             buf.set_string(inner_x + 6, y, &patch.name, name_style);
 
-            // Description
-            let desc = format!("    └─ \"{}\"", patch.description);
+            // Description (truncate to fit width)
+            let max_desc_width = list_area.width.saturating_sub(12) as usize;
+            let desc_prefix = "└─ \"";
+            let available = max_desc_width.saturating_sub(desc_prefix.len() + 1); // +1 for closing quote
+            let truncated_desc = truncate_str(&patch.description, available);
+            let desc = format!("    {}{}\"", desc_prefix, truncated_desc);
             buf.set_string(inner_x + 2, y + 1, &desc, theme::muted());
         }
 

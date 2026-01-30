@@ -2,6 +2,7 @@
 
 mod boot;
 mod build;
+mod build_config;
 mod clone;
 mod input;
 mod patch_select;
@@ -10,6 +11,7 @@ mod version_select;
 
 pub use boot::BootScreen;
 pub use build::{BuildPhase, BuildScreen};
+pub use build_config::BuildConfigScreen;
 pub use clone::{CloneScreen, CloneStatus};
 pub use input::InputScreen;
 pub use patch_select::{PatchInfo, PatchSelectScreen};

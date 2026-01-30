@@ -309,17 +309,29 @@ pub fn has_uncommitted_changes(repo: &Path) -> bool {
     }
 }
 
+/// Stash uncommitted changes
+pub fn stash_changes(repo: &Path) -> Result<()> {
+    let status = Command::new(resolve_command_path("git")?)
+        .current_dir(repo)
+        .args(["stash", "push", "-m", "codex-xtreme auto-stash"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()?;
+
+    if !status.success() {
+        bail!("Failed to stash changes");
+    }
+
+    Ok(())
+}
+
 /// Checkout a specific version (tag or branch)
 ///
-/// Returns an error if there are uncommitted changes to prevent accidental data loss.
+/// Auto-stashes uncommitted changes to prevent data loss.
 pub fn checkout_version(repo: &Path, version: &str) -> Result<()> {
-    // Check for uncommitted changes first
+    // Auto-stash uncommitted changes
     if has_uncommitted_changes(repo) {
-        bail!(
-            "Repository has uncommitted changes. Please commit or stash them first:\n  \
-             cd {} && git stash",
-            repo.display()
-        );
+        stash_changes(repo)?;
     }
 
     // Checkout the version
