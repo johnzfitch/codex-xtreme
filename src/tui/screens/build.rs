@@ -84,6 +84,7 @@ pub struct BuildScreen {
     current_item: String,
     log_lines: Vec<String>,
     patches_applied: Vec<String>,
+    patches_skipped: Vec<(String, String)>, // (name, reason)
     error_message: Option<String>,
     binary_path: Option<String>,
     build_time: Option<String>,
@@ -101,6 +102,7 @@ impl BuildScreen {
             current_item: String::new(),
             log_lines: Vec::new(),
             patches_applied: Vec::new(),
+            patches_skipped: Vec::new(),
             error_message: None,
             binary_path: None,
             build_time: None,
@@ -136,6 +138,10 @@ impl BuildScreen {
 
     pub fn add_patch(&mut self, name: impl Into<String>) {
         self.patches_applied.push(name.into());
+    }
+
+    pub fn add_skipped_patch(&mut self, name: impl Into<String>, reason: impl Into<String>) {
+        self.patches_skipped.push((name.into(), reason.into()));
     }
 
     pub fn set_version(&mut self, version: impl Into<String>) {
@@ -350,22 +356,46 @@ fn render_complete(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
         height: chunks[4].height,
     };
 
-    let patches_panel = Panel::new().title("INSTALLED PATCHES");
+    let title = if screen.patches_skipped.is_empty() {
+        "INSTALLED PATCHES"
+    } else {
+        "PATCH RESULTS"
+    };
+    let patches_panel = Panel::new().title(title);
     patches_panel.render(patches_area, buf);
 
-    for (i, patch) in screen
-        .patches_applied
-        .iter()
-        .take(patches_area.height.saturating_sub(2) as usize)
-        .enumerate()
-    {
+    let mut y_offset = 0u16;
+    let max_lines = patches_area.height.saturating_sub(2) as usize;
+
+    // Applied patches
+    for patch in screen.patches_applied.iter().take(max_lines) {
         let line = format!("  ✓ {}", patch);
         buf.set_string(
             patches_area.x + 2,
-            patches_area.y + 1 + i as u16,
+            patches_area.y + 1 + y_offset,
             &line,
             theme::success(),
         );
+        y_offset += 1;
+    }
+
+    // Skipped patches
+    let remaining_lines = max_lines.saturating_sub(y_offset as usize);
+    for (name, reason) in screen.patches_skipped.iter().take(remaining_lines) {
+        let line = format!("  ⊘ {} ({})", name, reason);
+        let max_width = patches_area.width.saturating_sub(4) as usize;
+        let display = if line.len() > max_width {
+            format!("{}...", &line[..max_width.saturating_sub(3)])
+        } else {
+            line
+        };
+        buf.set_string(
+            patches_area.x + 2,
+            patches_area.y + 1 + y_offset,
+            &display,
+            theme::muted(),
+        );
+        y_offset += 1;
     }
 
     // Exit prompt

@@ -60,6 +60,7 @@ pub enum BuildMessage {
     CurrentItem(String),
     Log(String),
     PatchApplied(String),
+    PatchSkipped(String, String), // (name, reason)
     Version(String),
     InstallPath(String),
     Complete {
@@ -192,6 +193,9 @@ impl App {
                         BuildMessage::CurrentItem(item) => screen.set_current_item(item),
                         BuildMessage::Log(line) => screen.add_log(line),
                         BuildMessage::PatchApplied(name) => screen.add_patch(name),
+                        BuildMessage::PatchSkipped(name, reason) => {
+                            screen.add_skipped_patch(name, reason)
+                        }
                         BuildMessage::Version(v) => screen.set_version(v),
                         BuildMessage::InstallPath(p) => screen.set_install_path(p),
                         BuildMessage::Complete {
@@ -626,6 +630,9 @@ fn run_build(
                     let results = apply_patches(&config, &workspace, &workspace_version);
 
                     let mut applied_count = 0;
+                    let mut skipped_count = 0;
+                    let mut skip_reason = String::new();
+
                     for (patch_id, result) in results {
                         match result {
                             Ok(PatchResult::Applied { file }) => {
@@ -641,25 +648,47 @@ fn run_build(
                                     "  ○ {} (already applied)",
                                     patch_id
                                 )));
+                                // Already applied counts as success
+                                applied_count += 1;
                             }
                             Ok(PatchResult::SkippedVersion { reason }) => {
                                 send(BuildMessage::Log(format!("  ⊘ {} ({})", patch_id, reason)));
+                                skipped_count += 1;
+                                if skip_reason.is_empty() {
+                                    skip_reason = reason;
+                                }
                             }
                             Ok(PatchResult::Failed { reason, .. }) => {
                                 send(BuildMessage::Log(format!("  ✗ {} ({})", patch_id, reason)));
+                                skipped_count += 1;
+                                if skip_reason.is_empty() {
+                                    skip_reason = reason;
+                                }
                             }
                             Err(e) => {
                                 send(BuildMessage::Log(format!("  ✗ {} ({})", patch_id, e)));
+                                skipped_count += 1;
+                                if skip_reason.is_empty() {
+                                    skip_reason = e.to_string();
+                                }
                             }
                         }
                     }
 
                     if applied_count > 0 {
-                        send(BuildMessage::PatchApplied(patch_name));
+                        send(BuildMessage::PatchApplied(patch_name.clone()));
+                    }
+                    if skipped_count > 0 && applied_count == 0 {
+                        // Only show as skipped if ALL patches in this file were skipped
+                        send(BuildMessage::PatchSkipped(patch_name, skip_reason));
                     }
                 }
                 Err(e) => {
                     send(BuildMessage::Log(format!("  ✗ Failed to load: {}", e)));
+                    send(BuildMessage::PatchSkipped(
+                        patch_name,
+                        format!("load error: {}", e),
+                    ));
                 }
             }
 
