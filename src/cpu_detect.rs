@@ -96,11 +96,9 @@ pub fn cpu_display_name(name: &str) -> String {
 }
 
 fn detect_cpu_from_rustc() -> Option<String> {
-    if which::which("rustc").is_err() {
-        return None;
-    }
+    let rustc_path = which::which("rustc").ok()?;
 
-    let output = Command::new("rustc")
+    let output = Command::new(rustc_path)
         .args(["--print=target-cpus"])
         .output()
         .ok()?;
@@ -280,7 +278,8 @@ fn extract_first_4digit_number(text: &str) -> Option<u32> {
 
 #[cfg(target_os = "macos")]
 fn detect_cpu_family() -> Option<(String, DetectionMethod)> {
-    let output = Command::new("sysctl")
+    let sysctl_path = which::which("sysctl").ok()?;
+    let output = Command::new(sysctl_path)
         .args(["-n", "machdep.cpu.brand_string"])
         .output()
         .ok()?;

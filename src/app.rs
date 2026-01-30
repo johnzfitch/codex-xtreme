@@ -358,7 +358,10 @@ impl App {
 
                 PatchInfo {
                     name,
-                    description: config.meta.description.unwrap_or(config.meta.name),
+                    description: config
+                        .meta
+                        .description
+                        .unwrap_or_else(|| config.meta.name.clone()),
                     selected: auto_select,
                     compatible: true, // Could check version_range
                 }

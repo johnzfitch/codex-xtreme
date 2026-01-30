@@ -37,6 +37,10 @@ struct Args {
     detect_cpu_only: bool,
 }
 
+fn resolve_command_path(name: &str) -> Result<PathBuf> {
+    which::which(name).map_err(|_| anyhow::anyhow!("Required command not found in PATH: {name}"))
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -514,7 +518,7 @@ fn find_codex_repos() -> Result<Vec<RepoInfo>> {
 }
 
 fn get_current_branch(repo: &Path) -> Result<String> {
-    let output = Command::new("git")
+    let output = Command::new(resolve_command_path("git")?)
         .current_dir(repo)
         .args(["branch", "--show-current"])
         .output()?;
@@ -559,7 +563,7 @@ fn clone_codex() -> Result<RepoInfo> {
     let sp = spinner();
     sp.start("Cloning Codex from GitHub...");
 
-    let status = Command::new("git")
+    let status = Command::new(resolve_command_path("git")?)
         .args(["clone", "--depth=100", CODEX_REPO_URL])
         .arg(&dest_path)
         .stdout(Stdio::null())
@@ -580,7 +584,7 @@ fn clone_codex() -> Result<RepoInfo> {
 }
 
 fn fetch_repo(repo: &Path) -> Result<()> {
-    Command::new("git")
+    Command::new(resolve_command_path("git")?)
         .current_dir(repo)
         .args(["fetch", "--tags", "--quiet"])
         .status()?;
@@ -591,7 +595,7 @@ fn fetch_repo(repo: &Path) -> Result<()> {
 #[instrument(skip(repo), fields(repo = %repo.display()))]
 fn get_github_releases(repo: &Path) -> Result<Vec<Release>> {
     // Get all tags matching rust-v*
-    let output = Command::new("git")
+    let output = Command::new(resolve_command_path("git")?)
         .current_dir(repo)
         .args([
             "tag",
@@ -646,7 +650,14 @@ fn get_github_releases(repo: &Path) -> Result<Vec<Release>> {
 #[instrument(skip(repo), fields(repo = %repo.display()))]
 fn get_current_version(repo: &Path) -> Option<String> {
     // Try git describe first
-    let output = Command::new("git")
+    let git = match resolve_command_path("git") {
+        Ok(path) => path,
+        Err(_) => {
+            let workspace = repo.join(CODEX_RS_SUBDIR);
+            return read_workspace_version(&workspace).ok();
+        }
+    };
+    let output = Command::new(git)
         .current_dir(repo)
         .args(["describe", "--tags", "--abbrev=0", "--match", "rust-v*"])
         .output()
@@ -666,7 +677,7 @@ fn get_current_version(repo: &Path) -> Option<String> {
 #[instrument(skip(repo), fields(repo = %repo.display()))]
 fn checkout_version(repo: &Path, version: &str) -> Result<()> {
     // First, stash any local changes
-    Command::new("git")
+    Command::new(resolve_command_path("git")?)
         .current_dir(repo)
         .args(["stash", "--include-untracked"])
         .stdout(Stdio::null())
@@ -675,7 +686,7 @@ fn checkout_version(repo: &Path, version: &str) -> Result<()> {
         .ok();
 
     // Checkout the version
-    let status = Command::new("git")
+    let status = Command::new(resolve_command_path("git")?)
         .current_dir(repo)
         .args(["checkout", version])
         .stdout(Stdio::null())
@@ -691,13 +702,13 @@ fn checkout_version(repo: &Path, version: &str) -> Result<()> {
 
 fn cherry_pick_commits(repo: &Path, shas: &[String]) -> Result<()> {
     for sha in shas {
-        let status = Command::new("git")
+        let status = Command::new(resolve_command_path("git")?)
             .current_dir(repo)
             .args(["cherry-pick", "--no-commit", sha])
             .status()?;
 
         if !status.success() {
-            Command::new("git")
+            Command::new(resolve_command_path("git")?)
                 .current_dir(repo)
                 .args(["cherry-pick", "--abort"])
                 .status()
@@ -804,12 +815,16 @@ fn read_workspace_version(workspace: &Path) -> Result<String> {
     }
 
     // Fallback: try to get from git tag
-    let output = Command::new("git")
-        .current_dir(workspace)
-        .args(["describe", "--tags", "--abbrev=0"])
-        .output();
+    let output = match resolve_command_path("git") {
+        Ok(path) => Command::new(path)
+            .current_dir(workspace)
+            .args(["describe", "--tags", "--abbrev=0"])
+            .output()
+            .ok(),
+        Err(_) => None,
+    };
 
-    if let Ok(output) = output {
+    if let Some(output) = output {
         let tag = String::from_utf8_lossy(&output.stdout).trim().to_string();
         // Extract version from tag like "rust-v0.88.0" or "v0.88.0"
         if let Some(version) = tag.strip_prefix("rust-v").or_else(|| tag.strip_prefix("v")) {
@@ -1015,7 +1030,7 @@ fn run_cargo_build(
     use_mold: bool,
     emit_relocs: bool, // For BOLT optimization
 ) -> Result<PathBuf, BuildError> {
-    let mut cmd = Command::new("cargo");
+    let mut cmd = Command::new(resolve_command_path("cargo").map_err(BuildError::Other)?);
     cmd.current_dir(workspace)
         .args([
             "build",
@@ -1173,12 +1188,18 @@ fn run_bolt_optimization(binary_path: &Path) -> Result<PathBuf> {
     let perf_data = binary_dir.join("perf.data");
     let bolt_profile = binary_dir.join("perf.fdata");
     let mut use_lbr = true;
+    let perf_path =
+        resolve_command_path("perf").context("perf is required for BOLT optimization")?;
+    let perf2bolt_path =
+        resolve_command_path("perf2bolt").context("perf2bolt is required for BOLT optimization")?;
+    let bolt_path =
+        resolve_command_path("llvm-bolt").context("llvm-bolt is required for BOLT optimization")?;
 
     // Step 1: Profile with perf using LBR (Last Branch Record) sampling
     // This has zero runtime overhead compared to instrumentation
     log::info("Profiling binary with perf LBR (run some typical commands)...")?;
 
-    let perf_output = Command::new("perf")
+    let perf_output = Command::new(&perf_path)
         .args([
             "record",
             "-e",
@@ -1213,7 +1234,7 @@ fn run_bolt_optimization(binary_path: &Path) -> Result<PathBuf> {
             log::warning("perf LBR record failed (failed to spawn perf).")?;
         }
         // Try without LBR (fallback for systems without hardware support)
-        let perf_fallback_output = Command::new("perf")
+        let perf_fallback_output = Command::new(&perf_path)
             .args([
                 "record",
                 "-e",
@@ -1239,7 +1260,7 @@ fn run_bolt_optimization(binary_path: &Path) -> Result<PathBuf> {
     }
 
     // Step 2: Convert perf data to BOLT format
-    let mut perf2bolt_cmd = Command::new("perf2bolt");
+    let mut perf2bolt_cmd = Command::new(perf2bolt_path);
     perf2bolt_cmd.args([
         "-p",
         perf_data.to_str().unwrap(),
@@ -1266,7 +1287,7 @@ fn run_bolt_optimization(binary_path: &Path) -> Result<PathBuf> {
     }
 
     // Step 3: Optimize with llvm-bolt
-    let bolt_output = Command::new("llvm-bolt")
+    let bolt_output = Command::new(bolt_path)
         .arg(binary_path)
         .args(["-o", bolted_binary.to_str().unwrap()])
         .args(["-data", bolt_profile.to_str().unwrap()])
@@ -1315,7 +1336,7 @@ fn run_verification_tests(workspace: &Path) -> Result<()> {
         let sp = spinner();
         sp.start(format!("Running {}...", name));
 
-        let status = Command::new("cargo")
+        let status = Command::new(resolve_command_path("cargo")?)
             .current_dir(workspace)
             .args(&args)
             .stdout(Stdio::null())
@@ -1351,9 +1372,16 @@ fn setup_alias(binary_path: &Path) -> Result<()> {
     if let Ok(contents) = std::fs::read_to_string(&rc_file) {
         if contents.contains("alias codex=") {
             log::step("Alias already exists, updating...")?;
-            Command::new("sed")
-                .args(["-i", &format!("s|alias codex=.*|{}|", alias_line), &rc_file])
-                .status()?;
+            let mut updated_lines = Vec::new();
+            for line in contents.lines() {
+                if line.trim_start().starts_with("alias codex=") {
+                    updated_lines.push(alias_line.clone());
+                } else {
+                    updated_lines.push(line.to_string());
+                }
+            }
+            let updated = updated_lines.join("\n");
+            std::fs::write(&rc_file, format!("{updated}\n"))?;
         } else {
             std::fs::write(
                 &rc_file,
