@@ -815,41 +815,61 @@ fn run_build(
         )));
     }
 
-    // Phase 5: Install (symlink to ~/.local/bin)
+    // Phase 5: Install to PATH
     send(BuildMessage::Progress(0.98));
     send(BuildMessage::CurrentItem("Installing to PATH...".to_string()));
 
-    let local_bin = dirs::home_dir()
-        .map(|h| h.join(".local/bin"))
-        .unwrap_or_else(|| std::path::PathBuf::from("/usr/local/bin"));
-
-    // Create ~/.local/bin if it doesn't exist
-    if !local_bin.exists() {
-        let _ = std::fs::create_dir_all(&local_bin);
-    }
-
-    let symlink_path = local_bin.join("codex");
-
-    // Remove old symlink if exists
-    if symlink_path.exists() || symlink_path.is_symlink() {
-        let _ = std::fs::remove_file(&symlink_path);
-    }
-
-    // Create symlink
     #[cfg(unix)]
     {
+        // Use ~/.local/bin on Unix (Linux/macOS)
+        let local_bin = dirs::home_dir()
+            .map(|h| h.join(".local/bin"))
+            .unwrap_or_else(|| std::path::PathBuf::from("/usr/local/bin"));
+
+        // Create ~/.local/bin if it doesn't exist
+        if !local_bin.exists() {
+            let _ = std::fs::create_dir_all(&local_bin);
+            send(BuildMessage::Log(format!(
+                "  Created {}",
+                local_bin.display()
+            )));
+        }
+
+        let symlink_path = local_bin.join("codex");
+
+        // Remove old symlink/file if exists
+        if symlink_path.exists() || symlink_path.is_symlink() {
+            let _ = std::fs::remove_file(&symlink_path);
+        }
+
+        // Create symlink
         match std::os::unix::fs::symlink(&binary_path, &symlink_path) {
             Ok(_) => {
                 send(BuildMessage::Log(format!(
-                    "  ✓ Linked {} → {}",
-                    symlink_path.display(),
-                    binary_path.display()
+                    "  ✓ Linked {} → codex",
+                    local_bin.display()
                 )));
+
+                // Check if ~/.local/bin is in PATH
+                let path_var = std::env::var("PATH").unwrap_or_default();
+                let local_bin_str = local_bin.to_string_lossy();
+                if !path_var.contains(local_bin_str.as_ref()) {
+                    send(BuildMessage::Log(format!(
+                        "  ⚠ {} not in PATH - add to your shell rc:",
+                        local_bin.display()
+                    )));
+                    send(BuildMessage::Log(
+                        "    export PATH=\"$HOME/.local/bin:$PATH\"".to_string(),
+                    ));
+                }
             }
             Err(e) => {
                 send(BuildMessage::Log(format!(
-                    "  ⚠ Failed to create symlink: {} (run manually: ln -sf {} {})",
-                    e,
+                    "  ✗ Symlink failed: {}",
+                    e
+                )));
+                send(BuildMessage::Log(format!(
+                    "    Run: ln -sf {} {}",
                     binary_path.display(),
                     symlink_path.display()
                 )));
@@ -859,10 +879,38 @@ fn run_build(
 
     #[cfg(windows)]
     {
-        send(BuildMessage::Log(format!(
-            "  ⚠ Windows: Add {} to your PATH manually",
-            binary_path.display()
-        )));
+        // On Windows, copy binary to %LOCALAPPDATA%\Programs\codex-xtreme
+        let install_dir = dirs::data_local_dir()
+            .map(|d| d.join("Programs").join("codex-xtreme"))
+            .unwrap_or_else(|| std::path::PathBuf::from("C:\\codex-xtreme"));
+
+        if !install_dir.exists() {
+            let _ = std::fs::create_dir_all(&install_dir);
+        }
+
+        let dest_path = install_dir.join("codex.exe");
+
+        match std::fs::copy(&binary_path, &dest_path) {
+            Ok(_) => {
+                send(BuildMessage::Log(format!(
+                    "  ✓ Copied to {}",
+                    dest_path.display()
+                )));
+                send(BuildMessage::Log(
+                    "  ⚠ Add to PATH via System Properties > Environment Variables".to_string(),
+                ));
+                send(BuildMessage::Log(format!(
+                    "    Or run: setx PATH \"%PATH%;{}\"",
+                    install_dir.display()
+                )));
+            }
+            Err(e) => {
+                send(BuildMessage::Log(format!(
+                    "  ✗ Copy failed: {}",
+                    e
+                )));
+            }
+        }
     }
 
     let elapsed = start_time.elapsed();
