@@ -64,16 +64,6 @@ impl BuildPhase {
             BuildPhase::Error => "ERROR",
         }
     }
-
-    fn jp(&self) -> &'static str {
-        match self {
-            BuildPhase::Patching => jp::INJECTING,
-            BuildPhase::Compiling => jp::COMPILING,
-            BuildPhase::Installing => "インストール中",
-            BuildPhase::Complete => jp::BUILD_COMPLETE,
-            BuildPhase::Error => "エラー",
-        }
-    }
 }
 
 /// Build progress screen
@@ -130,8 +120,8 @@ impl BuildScreen {
 
     pub fn add_log(&mut self, line: impl Into<String>) {
         self.log_lines.push(line.into());
-        // Keep only last 10 lines
-        if self.log_lines.len() > 10 {
+        // Keep only last 20 lines for better visibility
+        if self.log_lines.len() > 20 {
             self.log_lines.remove(0);
         }
     }
@@ -204,24 +194,18 @@ impl Widget for &BuildScreen {
 
 fn render_progress(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
     let chunks = Layout::vertical([
-        Constraint::Length(4), // Header
-        Constraint::Length(4), // Build info (version, path)
-        Constraint::Length(3), // Progress bar
+        Constraint::Length(3), // Build info (version, path) - condensed
+        Constraint::Length(3), // Progress bar with phase label
         Constraint::Length(2), // Current item
-        Constraint::Min(6),    // Log output
+        Constraint::Min(8),    // Log output - more space now
         Constraint::Length(2), // Help
     ])
     .split(area);
 
-    // Header with phase
-    let header_line = format!("░▒▓█ {} //{} █▓▒░", screen.phase.title(), screen.phase.jp());
-    let header_x = area.x + (area.width.saturating_sub(header_line.len() as u16)) / 2;
-    buf.set_string(header_x, chunks[0].y + 1, &header_line, theme::title());
-
     // Build info
     if !screen.version.is_empty() {
         let version_line = format!("Version: {}", screen.version);
-        buf.set_string(area.x + 4, chunks[1].y, &version_line, theme::secondary());
+        buf.set_string(area.x + 4, chunks[0].y, &version_line, theme::secondary());
     }
     if !screen.install_path.is_empty() {
         let path_line = format!("Target:  {}", screen.install_path);
@@ -231,14 +215,19 @@ fn render_progress(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
         } else {
             path_line
         };
-        buf.set_string(area.x + 4, chunks[1].y + 1, &display_path, theme::muted());
+        buf.set_string(area.x + 4, chunks[0].y + 1, &display_path, theme::muted());
     }
 
-    // Progress bar
+    // Phase label inline with progress bar: "COMPILING ████████░░░░ 45%"
+    let phase_label = format!("{} ", screen.phase.title());
+    let phase_len = phase_label.len() as u16;
+    buf.set_string(area.x + 4, chunks[1].y + 1, &phase_label, theme::title());
+
+    // Progress bar after phase label
     let progress_area = Rect {
-        x: area.x + 4,
-        y: chunks[2].y + 1,
-        width: area.width.saturating_sub(8),
+        x: area.x + 4 + phase_len,
+        y: chunks[1].y + 1,
+        width: area.width.saturating_sub(8 + phase_len),
         height: 1,
     };
     let progress = ProgressBar::new(screen.progress)
@@ -253,15 +242,15 @@ fn render_progress(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
 
         let line = format!("{} {}", spinner, screen.current_item);
         let x = area.x + 4;
-        buf.set_string(x, chunks[3].y, &line, theme::active());
+        buf.set_string(x, chunks[2].y, &line, theme::active());
     }
 
     // Log panel
     let log_area = Rect {
-        x: chunks[4].x + 2,
-        y: chunks[4].y,
-        width: chunks[4].width.saturating_sub(4),
-        height: chunks[4].height,
+        x: chunks[3].x + 2,
+        y: chunks[3].y,
+        width: chunks[3].width.saturating_sub(4),
+        height: chunks[3].height,
     };
 
     let log_panel = Panel::new().title("OUTPUT");
@@ -287,7 +276,7 @@ fn render_progress(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
     // Help
     let help = "Building... Press [Q] to cancel";
     let help_x = area.x + (area.width.saturating_sub(help.len() as u16)) / 2;
-    buf.set_string(help_x, chunks[5].y, help, theme::muted());
+    buf.set_string(help_x, chunks[4].y, help, theme::muted());
 }
 
 fn render_complete(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
@@ -314,8 +303,15 @@ fn render_complete(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
     let panel = Panel::new().double_border().focused(true);
     panel.render(banner_area, buf);
 
-    // Banner text
-    let title = format!("████ {} ████", "BUILD COMPLETE");
+    // Banner text - check if decorations fit
+    let inner_width = banner_width.saturating_sub(4) as usize; // Account for borders
+    let base_title = "BUILD COMPLETE";
+    let decorated_title = format!("████ {} ████", base_title);
+    let title = if decorated_title.len() <= inner_width {
+        decorated_title
+    } else {
+        base_title.to_string()
+    };
     let title_x = banner_x + (banner_width.saturating_sub(title.len() as u16)) / 2;
     buf.set_string(
         title_x,
@@ -326,9 +322,13 @@ fn render_complete(screen: &BuildScreen, area: Rect, buf: &mut Buffer) {
             .add_modifier(Modifier::BOLD),
     );
 
+    // Japanese title - only show if it fits
     let jp_title = jp::BUILD_COMPLETE;
-    let jp_x = banner_x + (banner_width.saturating_sub(jp_title.len() as u16)) / 2;
-    buf.set_string(jp_x, banner_area.y + 2, jp_title, theme::kanji());
+    let jp_width = jp_title.chars().count(); // Use char count for proper Unicode width
+    if jp_width <= inner_width {
+        let jp_x = banner_x + (banner_width.saturating_sub(jp_width as u16)) / 2;
+        buf.set_string(jp_x, banner_area.y + 2, jp_title, theme::kanji());
+    }
 
     // Binary info
     if let Some(ref path) = screen.binary_path {

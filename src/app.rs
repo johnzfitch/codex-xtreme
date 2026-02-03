@@ -627,7 +627,37 @@ fn run_build(
 
             match load_from_path(patch_path) {
                 Ok(config) => {
-                    let results = apply_patches(&config, &workspace, &workspace_version);
+                    send(BuildMessage::Log(format!(
+                        "  Applying {} patches from config...",
+                        config.patches.len()
+                    )));
+
+                    // Catch panics in apply_patches
+                    let results = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        apply_patches(&config, &workspace, &workspace_version)
+                    }));
+
+                    let results = match results {
+                        Ok(r) => r,
+                        Err(panic_info) => {
+                            let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                                s.to_string()
+                            } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                                s.clone()
+                            } else {
+                                "Unknown panic".to_string()
+                            };
+                            send(BuildMessage::Error(format!(
+                                "Patch application panicked: {}",
+                                panic_msg
+                            )));
+                            send(BuildMessage::Log(format!(
+                                "ERROR: Panic in apply_patches for {}: {}",
+                                patch_name, panic_msg
+                            )));
+                            return;
+                        }
+                    };
 
                     let mut applied_count = 0;
                     let mut skipped_count = 0;
@@ -705,8 +735,22 @@ fn run_build(
         "Building codex-cli...".to_string(),
     ));
 
-    // Use xtreme profile (thin LTO) if available, otherwise release
-    let profile = "xtreme";
+    // Check if xtreme profile exists (added by xtreme-profile patch)
+    // Fall back to release if not present
+    let cargo_toml = workspace.join("Cargo.toml");
+    let profile = if let Ok(contents) = std::fs::read_to_string(&cargo_toml) {
+        if contents.contains("[profile.xtreme]") {
+            "xtreme"
+        } else {
+            send(BuildMessage::Log(
+                "xtreme profile not found, using release".to_string(),
+            ));
+            "release"
+        }
+    } else {
+        "release"
+    };
+
     send(BuildMessage::Log(format!(
         "cargo build --profile {} -p codex-cli",
         profile
@@ -740,8 +784,8 @@ fn run_build(
                         // Apply ease-out: fast start, slow finish (matches real build times)
                         // Using cubic ease-out: 1 - (1-x)^3
                         let eased = 1.0 - (1.0 - linear).powi(3);
-                        // Map to 5-98% range
-                        let progress = 0.05 + (0.93 * eased);
+                        // Map to 5-85% range (leave room for verify/install phases)
+                        let progress = 0.05 + (0.80 * eased);
                         send(BuildMessage::Progress(progress));
 
                         // Extract crate name
@@ -753,6 +797,13 @@ fn run_build(
                                 estimated_total_crates as i32
                             )));
                         }
+
+                        // Stream compilation output to log
+                        send(BuildMessage::Log(line));
+                    } else if line.contains("Finished") {
+                        send(BuildMessage::Log(line));
+                    } else if line.contains("warning:") {
+                        send(BuildMessage::Log(line));
                     } else if line.contains("error") || line.contains("Error") {
                         send(BuildMessage::Log(line));
                     }
@@ -761,7 +812,7 @@ fn run_build(
 
             match child.wait() {
                 Ok(status) if status.success() => {
-                    send(BuildMessage::Progress(0.98));
+                    send(BuildMessage::Progress(0.85));
                 }
                 Ok(status) => {
                     send(BuildMessage::Error(format!(
@@ -785,9 +836,9 @@ fn run_build(
     // Find the built binary (profile xtreme outputs to target/xtreme/)
     let binary_path = workspace.join(format!("target/{}/codex", profile));
 
-    // Phase 4: Verify
+    // Phase 4: Verify (85% → 92%)
     send(BuildMessage::Phase(BuildPhase::Installing)); // Reuse as "Verifying"
-    send(BuildMessage::Progress(0.95));
+    send(BuildMessage::Progress(0.88));
     send(BuildMessage::CurrentItem("Verifying build...".to_string()));
     send(BuildMessage::Log("Running codex --version".to_string()));
 
@@ -815,8 +866,8 @@ fn run_build(
         )));
     }
 
-    // Phase 5: Install to PATH
-    send(BuildMessage::Progress(0.98));
+    // Phase 5: Install to PATH (92% → 99%)
+    send(BuildMessage::Progress(0.94));
     send(BuildMessage::CurrentItem("Installing to PATH...".to_string()));
 
     #[cfg(unix)]

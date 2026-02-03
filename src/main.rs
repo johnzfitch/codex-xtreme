@@ -379,7 +379,7 @@ fn main() -> Result<()> {
     // BOLT optimization (xtreme profile only, requires llvm-bolt)
     let use_bolt = if profile == "xtreme" && which::which("llvm-bolt").is_ok() {
         confirm("Run BOLT optimization? (profile + reoptimize for +10-15% speed)")
-            .initial_value(false)
+            .initial_value(true)
             .interact()?
     } else {
         false
@@ -404,6 +404,14 @@ fn main() -> Result<()> {
             .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
+            .filter(|s| {
+                // Validate SHA format: 7-40 hex characters
+                let valid = s.len() >= 7 && s.len() <= 40 && s.chars().all(|c| c.is_ascii_hexdigit());
+                if !valid {
+                    eprintln!("Warning: Invalid SHA format '{}', skipping", s);
+                }
+                valid
+            })
             .collect();
 
         if !cherry_pick_shas.is_empty() {
@@ -1287,9 +1295,12 @@ fn run_bolt_optimization(binary_path: &Path) -> Result<PathBuf> {
     }
 
     // Step 3: Optimize with llvm-bolt
+    // Write to temp file first to avoid "Text file busy" error if binary is still open
+    let temp_output = binary_dir.join(format!("{}.bolt.tmp", binary_name.to_string_lossy()));
+
     let bolt_output = Command::new(bolt_path)
         .arg(binary_path)
-        .args(["-o", bolted_binary.to_str().unwrap()])
+        .args(["-o", temp_output.to_str().unwrap()])
         .args(["-data", bolt_profile.to_str().unwrap()])
         .args([
             "-reorder-blocks=ext-tsp",   // Extended TSP for block ordering
@@ -1304,6 +1315,8 @@ fn run_bolt_optimization(binary_path: &Path) -> Result<PathBuf> {
         .context("llvm-bolt failed")?;
 
     if !bolt_output.status.success() {
+        // Cleanup temp file on failure
+        std::fs::remove_file(&temp_output).ok();
         let stderr = String::from_utf8_lossy(&bolt_output.stderr);
         let stderr = stderr.trim();
         if stderr.is_empty() {
@@ -1311,6 +1324,10 @@ fn run_bolt_optimization(binary_path: &Path) -> Result<PathBuf> {
         }
         bail!("llvm-bolt optimization failed: {}", stderr);
     }
+
+    // Rename temp file to final output
+    std::fs::rename(&temp_output, &bolted_binary)
+        .context("Failed to rename BOLT output to final location")?;
 
     // Cleanup temp files
     std::fs::remove_file(&perf_data).ok();
