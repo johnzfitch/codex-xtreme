@@ -18,6 +18,10 @@ pub const CODEX_RS_SUBDIR: &str = "codex-rs";
 /// GitHub repo URL
 pub const CODEX_REPO_URL: &str = "https://github.com/openai/codex.git";
 
+fn resolve_command_path(name: &str) -> Result<PathBuf> {
+    which::which(name).map_err(|_| anyhow::anyhow!("Required command not found in PATH: {name}"))
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPES
 // ═══════════════════════════════════════════════════════════════════════════
@@ -135,7 +139,7 @@ pub fn find_codex_repos() -> Result<Vec<RepoInfo>> {
 }
 
 fn get_current_branch(repo: &Path) -> Result<String> {
-    let output = Command::new("git")
+    let output = Command::new(resolve_command_path("git")?)
         .current_dir(repo)
         .args(["branch", "--show-current"])
         .output()?;
@@ -155,10 +159,15 @@ fn get_repo_age(repo: &Path) -> String {
         Ok(time) => {
             let duration = SystemTime::now().duration_since(time).unwrap_or_default();
             let secs = duration.as_secs();
-            if secs < 60 { format!("{}s ago", secs) }
-            else if secs < 3600 { format!("{}m ago", secs / 60) }
-            else if secs < 86400 { format!("{}h ago", secs / 3600) }
-            else { format!("{}d ago", secs / 86400) }
+            if secs < 60 {
+                format!("{}s ago", secs)
+            } else if secs < 3600 {
+                format!("{}m ago", secs / 60)
+            } else if secs < 86400 {
+                format!("{}h ago", secs / 3600)
+            } else {
+                format!("{}d ago", secs / 86400)
+            }
         }
         Err(_) => "unknown".into(),
     }
@@ -177,7 +186,10 @@ pub fn clone_codex(dest: &Path) -> Result<RepoInfo> {
 
         // Only remove if it looks like a git repo or empty directory
         let is_git_repo = dest.join(".git").exists();
-        let is_empty = dest.read_dir().map(|mut d| d.next().is_none()).unwrap_or(false);
+        let is_empty = dest
+            .read_dir()
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(false);
 
         if !is_git_repo && !is_empty {
             bail!(
@@ -190,7 +202,7 @@ pub fn clone_codex(dest: &Path) -> Result<RepoInfo> {
         std::fs::remove_dir_all(dest)?;
     }
 
-    let status = Command::new("git")
+    let status = Command::new(resolve_command_path("git")?)
         .args(["clone", "--depth=100", CODEX_REPO_URL])
         .arg(dest)
         .stdout(Stdio::null())
@@ -210,7 +222,7 @@ pub fn clone_codex(dest: &Path) -> Result<RepoInfo> {
 
 /// Fetch updates from remote
 pub fn fetch_repo(repo: &Path) -> Result<()> {
-    Command::new("git")
+    Command::new(resolve_command_path("git")?)
         .current_dir(repo)
         .args(["fetch", "--tags", "--quiet"])
         .status()?;
@@ -219,7 +231,7 @@ pub fn fetch_repo(repo: &Path) -> Result<()> {
 
 /// Get all rust-v* releases from the repo (sorted newest first)
 pub fn get_releases(repo: &Path) -> Result<Vec<Release>> {
-    let output = Command::new("git")
+    let output = Command::new(resolve_command_path("git")?)
         .current_dir(repo)
         .args([
             "tag",
@@ -242,7 +254,8 @@ pub fn get_releases(repo: &Path) -> Result<Vec<Release>> {
         };
 
         // Filter out malformed tags
-        if !tag.starts_with("rust-v") || tag.starts_with("rust-vv") || tag.starts_with("rust-vrust") {
+        if !tag.starts_with("rust-v") || tag.starts_with("rust-vv") || tag.starts_with("rust-vrust")
+        {
             continue;
         }
 
@@ -253,7 +266,11 @@ pub fn get_releases(repo: &Path) -> Result<Vec<Release>> {
         let published = parts.get(1).unwrap_or(&"").to_string();
         let version = tag.strip_prefix("rust-v").unwrap_or(&tag).to_string();
 
-        releases.push(Release { tag, version, published });
+        releases.push(Release {
+            tag,
+            version,
+            published,
+        });
     }
 
     Ok(releases)
@@ -261,7 +278,8 @@ pub fn get_releases(repo: &Path) -> Result<Vec<Release>> {
 
 /// Get the current version of the repo
 pub fn get_current_version(repo: &Path) -> Option<String> {
-    let output = Command::new("git")
+    let git = resolve_command_path("git").ok()?;
+    let output = Command::new(git)
         .current_dir(repo)
         .args(["describe", "--tags", "--abbrev=0", "--match", "rust-v*"])
         .output()
@@ -277,10 +295,13 @@ pub fn get_current_version(repo: &Path) -> Option<String> {
 
 /// Check if repository has uncommitted changes
 pub fn has_uncommitted_changes(repo: &Path) -> bool {
-    let output = Command::new("git")
-        .current_dir(repo)
-        .args(["status", "--porcelain"])
-        .output();
+    let output = match resolve_command_path("git") {
+        Ok(path) => Command::new(path)
+            .current_dir(repo)
+            .args(["status", "--porcelain"])
+            .output(),
+        Err(_) => return false,
+    };
 
     match output {
         Ok(out) => !out.stdout.is_empty(),
@@ -288,21 +309,33 @@ pub fn has_uncommitted_changes(repo: &Path) -> bool {
     }
 }
 
+/// Stash uncommitted changes
+pub fn stash_changes(repo: &Path) -> Result<()> {
+    let status = Command::new(resolve_command_path("git")?)
+        .current_dir(repo)
+        .args(["stash", "push", "-m", "codex-xtreme auto-stash"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()?;
+
+    if !status.success() {
+        bail!("Failed to stash changes");
+    }
+
+    Ok(())
+}
+
 /// Checkout a specific version (tag or branch)
 ///
-/// Returns an error if there are uncommitted changes to prevent accidental data loss.
+/// Auto-stashes uncommitted changes to prevent data loss.
 pub fn checkout_version(repo: &Path, version: &str) -> Result<()> {
-    // Check for uncommitted changes first
+    // Auto-stash uncommitted changes
     if has_uncommitted_changes(repo) {
-        bail!(
-            "Repository has uncommitted changes. Please commit or stash them first:\n  \
-             cd {} && git stash",
-            repo.display()
-        );
+        stash_changes(repo)?;
     }
 
     // Checkout the version
-    let status = Command::new("git")
+    let status = Command::new(resolve_command_path("git")?)
         .current_dir(repo)
         .args(["checkout", version])
         .stdout(Stdio::null())

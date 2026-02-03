@@ -24,6 +24,8 @@ pub struct CloneScreen {
     status: CloneStatus,
     progress_text: String,
     error_message: Option<String>,
+    /// Frames since completion (for auto-advance)
+    complete_frames: u64,
 }
 
 impl CloneScreen {
@@ -34,11 +36,33 @@ impl CloneScreen {
             status: CloneStatus::Cloning,
             progress_text: "Initializing...".to_string(),
             error_message: None,
+            complete_frames: 0,
         }
     }
 
     pub fn tick(&mut self) {
         self.frame += 1;
+        if self.status == CloneStatus::Complete {
+            self.complete_frames += 1;
+        }
+    }
+
+    /// Returns true when should auto-advance (2 seconds after completion)
+    pub fn should_auto_advance(&self) -> bool {
+        self.status == CloneStatus::Complete && self.complete_frames > 120 // ~2 seconds at 60fps
+    }
+
+    /// Countdown seconds remaining (2, 1, or 0 for advance)
+    pub fn countdown(&self) -> u8 {
+        if self.status != CloneStatus::Complete {
+            return 0;
+        }
+        let seconds = self.complete_frames / 60;
+        match seconds {
+            0 => 2,
+            1 => 1,
+            _ => 0,
+        }
     }
 
     pub fn set_progress(&mut self, text: impl Into<String>) {
@@ -82,11 +106,11 @@ impl Widget for &CloneScreen {
         }
 
         let chunks = Layout::vertical([
-            Constraint::Length(4),   // Header
-            Constraint::Length(1),   // Spacer
-            Constraint::Length(6),   // Status panel
-            Constraint::Min(4),      // Log/progress
-            Constraint::Length(2),   // Help
+            Constraint::Length(4), // Header
+            Constraint::Length(1), // Spacer
+            Constraint::Length(6), // Status panel
+            Constraint::Min(4),    // Log/progress
+            Constraint::Length(2), // Help
         ])
         .split(area);
 
@@ -120,7 +144,12 @@ impl Widget for &CloneScreen {
 
         // Destination
         let dest_line = format!("Destination: {}", self.destination);
-        buf.set_string(status_area.x + 2, status_area.y + 1, &dest_line, theme::secondary());
+        buf.set_string(
+            status_area.x + 2,
+            status_area.y + 1,
+            &dest_line,
+            theme::secondary(),
+        );
 
         // Source
         buf.set_string(
@@ -136,25 +165,47 @@ impl Widget for &CloneScreen {
                 let spinner_chars = theme::spinners::BRAILLE;
                 let spinner = spinner_chars[(self.frame / 4) as usize % spinner_chars.len()];
                 let progress_line = format!("{} {}", spinner, self.progress_text);
-                buf.set_string(status_area.x + 2, status_area.y + 4, &progress_line, theme::active());
+                buf.set_string(
+                    status_area.x + 2,
+                    status_area.y + 4,
+                    &progress_line,
+                    theme::active(),
+                );
             }
             CloneStatus::Complete => {
-                buf.set_string(status_area.x + 2, status_area.y + 4, "✓ Repository cloned successfully", theme::success());
+                buf.set_string(
+                    status_area.x + 2,
+                    status_area.y + 4,
+                    "✓ Repository cloned successfully",
+                    theme::success(),
+                );
             }
             CloneStatus::Error => {
                 if let Some(ref msg) = self.error_message {
-                    buf.set_string(status_area.x + 2, status_area.y + 4, &format!("✗ {}", msg), theme::error());
+                    buf.set_string(
+                        status_area.x + 2,
+                        status_area.y + 4,
+                        format!("✗ {}", msg),
+                        theme::error(),
+                    );
                 }
             }
         }
 
         // Help
         let help = match self.status {
-            CloneStatus::Cloning => "Cloning repository... Press [Q] to cancel",
-            CloneStatus::Complete => "Press [ENTER] to continue",
-            CloneStatus::Error => "Press [R] to retry or [ESC] to go back",
+            CloneStatus::Cloning => "Cloning repository... Press [Q] to cancel".to_string(),
+            CloneStatus::Complete => {
+                let countdown = self.countdown();
+                if countdown > 0 {
+                    format!("Continuing in {}...", countdown)
+                } else {
+                    "Launching...".to_string()
+                }
+            }
+            CloneStatus::Error => "Press [R] to retry or [ESC] to go back".to_string(),
         };
         let help_x = area.x + (area.width.saturating_sub(help.len() as u16)) / 2;
-        buf.set_string(help_x, chunks[4].y, help, theme::muted());
+        buf.set_string(help_x, chunks[4].y, &help, theme::muted());
     }
 }

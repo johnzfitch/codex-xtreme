@@ -48,16 +48,12 @@ pub const WHITE: Color = Color::Rgb(255, 255, 255);
 
 /// Main title style - bold cyan
 pub fn title() -> Style {
-    Style::default()
-        .fg(CYAN)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
 }
 
 /// Large banner title
 pub fn banner() -> Style {
-    Style::default()
-        .fg(CYAN)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
 }
 
 /// Highlighted/selected item
@@ -70,9 +66,7 @@ pub fn highlight() -> Style {
 
 /// Active/focused element
 pub fn focused() -> Style {
-    Style::default()
-        .fg(CYAN)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
 }
 
 /// Normal text
@@ -97,16 +91,12 @@ pub fn dim() -> Style {
 
 /// Success messages
 pub fn success() -> Style {
-    Style::default()
-        .fg(GREEN)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(GREEN).add_modifier(Modifier::BOLD)
 }
 
 /// Error messages
 pub fn error() -> Style {
-    Style::default()
-        .fg(PINK)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(PINK).add_modifier(Modifier::BOLD)
 }
 
 /// Warning messages
@@ -116,9 +106,7 @@ pub fn warning() -> Style {
 
 /// Active/in-progress
 pub fn active() -> Style {
-    Style::default()
-        .fg(MAGENTA)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(MAGENTA).add_modifier(Modifier::BOLD)
 }
 
 /// Code/technical content
@@ -138,16 +126,12 @@ pub fn border_focused() -> Style {
 
 /// Japanese accent text
 pub fn kanji() -> Style {
-    Style::default()
-        .fg(MAGENTA_DIM)
-        .add_modifier(Modifier::DIM)
+    Style::default().fg(MAGENTA_DIM).add_modifier(Modifier::DIM)
 }
 
 /// Cursor/selection indicator
 pub fn cursor() -> Style {
-    Style::default()
-        .fg(CYAN)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(CYAN).add_modifier(Modifier::BOLD)
 }
 
 // ============================================================================
@@ -218,3 +202,25 @@ pub const BANNER_LINES: &[&str] = &[
 
 /// Banner width for centering
 pub const BANNER_WIDTH: u16 = 43;
+
+// ============================================================================
+// Layout Utilities
+// ============================================================================
+
+/// Truncate string to max width, adding "..." if truncated
+pub fn truncate_str(s: &str, max_width: usize) -> String {
+    if s.len() <= max_width {
+        s.to_string()
+    } else if max_width > 3 {
+        format!("{}...", &s[..max_width - 3])
+    } else if max_width > 0 {
+        s[..max_width].to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Calculate centered x position for content of given width
+pub fn center_x(area_x: u16, area_width: u16, content_width: u16) -> u16 {
+    area_x + area_width.saturating_sub(content_width) / 2
+}
