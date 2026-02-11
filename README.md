@@ -136,6 +136,26 @@ The default patches remove:
 
 Your Codex binary will never contact external analytics services.
 
+### Additional v0.99 Privacy Patch Files
+
+For Codex `0.99.0-alpha` targets, install these versioned privacy patch files into your patch
+directory so `codex-xtreme` can auto-select compatible patches:
+
+| Patch File | Version Range | Link |
+|------------|---------------|------|
+| `privacy-v0.99-alpha1-alpha22.toml` | `>=0.99.0-alpha.10, <0.99.0-alpha.14` | [view](https://github.com/johnzfitch/codex-patcher/blob/main/patches/privacy-v0.99-alpha1-alpha22.toml) |
+| `privacy-v0.99-alpha14-alpha20.toml` | `>=0.99.0-alpha.14, <0.99.0-alpha.21` | [view](https://github.com/johnzfitch/codex-patcher/blob/main/patches/privacy-v0.99-alpha14-alpha20.toml) |
+| `privacy-v0.99-alpha23.toml` | `>=0.99.0-alpha.21` | [view](https://github.com/johnzfitch/codex-patcher/blob/main/patches/privacy-v0.99-alpha23.toml) |
+
+Download/install example:
+
+```bash
+mkdir -p ~/.config/codex-patcher/patches
+curl -fsSL https://raw.githubusercontent.com/johnzfitch/codex-patcher/main/patches/privacy-v0.99-alpha1-alpha22.toml -o ~/.config/codex-patcher/patches/privacy-v0.99-alpha1-alpha22.toml
+curl -fsSL https://raw.githubusercontent.com/johnzfitch/codex-patcher/main/patches/privacy-v0.99-alpha14-alpha20.toml -o ~/.config/codex-patcher/patches/privacy-v0.99-alpha14-alpha20.toml
+curl -fsSL https://raw.githubusercontent.com/johnzfitch/codex-patcher/main/patches/privacy-v0.99-alpha23.toml -o ~/.config/codex-patcher/patches/privacy-v0.99-alpha23.toml
+```
+
 ---
 
 ## <img src=".github/assets/icons/rocket.png" width="16" height="16" alt=""/> Performance Optimizations
