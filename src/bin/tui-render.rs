@@ -73,13 +73,13 @@ fn main() -> anyhow::Result<()> {
 
     let repo_select = RepoSelectScreen::new(vec![
         RepoInfo {
-            path: PathBuf::from("/home/zack/dev/codex"),
+            path: PathBuf::from("~/dev/codex"),
             age: "2h ago".to_string(),
             branch: "main".to_string(),
             is_modified: false,
         },
         RepoInfo {
-            path: PathBuf::from("/home/zack/dev/codex-worktrees/rust-v0.99.0-alpha.6"),
+            path: PathBuf::from("~/dev/codex-worktrees/rust-v0.99.0-alpha.6"),
             age: "1d ago".to_string(),
             branch: "rust-v0.99.0-alpha.6".to_string(),
             is_modified: true,
