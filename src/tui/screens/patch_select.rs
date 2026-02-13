@@ -1,6 +1,6 @@
 //! Patch selection screen with checkboxes
 
-use crate::tui::theme::{self, jp, truncate_str};
+use crate::tui::theme::{self, center_x, jp, truncate_str};
 use crate::tui::widgets::Panel;
 use ratatui::{
     buffer::Buffer,
@@ -8,12 +8,16 @@ use ratatui::{
     style::Style,
     widgets::Widget,
 };
+use std::path::PathBuf;
+use unicode_width::UnicodeWidthStr;
 
 /// Patch file information
 #[derive(Clone)]
 pub struct PatchInfo {
+    pub path: PathBuf,
     pub name: String,
     pub description: String,
+    pub patch_count: usize,
     pub selected: bool,
     pub compatible: bool,
 }
@@ -54,17 +58,15 @@ impl PatchSelectScreen {
 
     pub fn toggle_current(&mut self) {
         if let Some(patch) = self.patches.get_mut(self.cursor) {
-            if patch.compatible {
-                patch.selected = !patch.selected;
-            }
+            // Match CLI behavior: allow selecting "incompatible" patches too.
+            // The UI will surface incompatibility in the compatibility panel styling.
+            patch.selected = !patch.selected;
         }
     }
 
     pub fn select_all(&mut self) {
         for patch in &mut self.patches {
-            if patch.compatible {
-                patch.selected = true;
-            }
+            patch.selected = true;
         }
     }
 
@@ -76,6 +78,14 @@ impl PatchSelectScreen {
 
     pub fn selected_patches(&self) -> Vec<&PatchInfo> {
         self.patches.iter().filter(|p| p.selected).collect()
+    }
+
+    pub fn selected_patch_paths(&self) -> Vec<&PathBuf> {
+        self.patches
+            .iter()
+            .filter(|p| p.selected)
+            .map(|p| &p.path)
+            .collect()
     }
 
     pub fn frame(&self) -> u64 {
@@ -103,7 +113,8 @@ impl Widget for &PatchSelectScreen {
 
         // Header
         let header_line = format!("░▒▓█ LOAD PATCHES //{} █▓▒░", jp::PATCH_LOAD);
-        let header_x = area.x + (area.width.saturating_sub(header_line.len() as u16)) / 2;
+        let header_w = UnicodeWidthStr::width(header_line.as_str()) as u16;
+        let header_x = center_x(area.x, area.width, header_w);
         buf.set_string(header_x, chunks[0].y + 1, &header_line, theme::title());
 
         // Patch list panel
@@ -117,13 +128,13 @@ impl Widget for &PatchSelectScreen {
         let panel = Panel::new().title("PATCHES").focused(true);
         panel.render(list_area, buf);
 
-        // Patch list content
+        // Patch list content (compact 1-line per patch)
         let inner_y = list_area.y + 1;
         let inner_x = list_area.x + 2;
 
         for (idx, patch) in self.patches.iter().enumerate() {
-            let y = inner_y + (idx as u16 * 3);
-            if y >= list_area.y + list_area.height - 2 {
+            let y = inner_y + idx as u16;
+            if y >= list_area.y + list_area.height - 1 {
                 break;
             }
 
@@ -139,7 +150,7 @@ impl Widget for &PatchSelectScreen {
             buf.set_string(inner_x, y, cursor_char.to_string(), theme::cursor());
 
             // Checkbox
-            let checkbox = if patch.selected { "[✓]" } else { "[ ]" };
+            let checkbox = if patch.selected { "[x]" } else { "[ ]" };
             let checkbox_style = if !patch.compatible {
                 theme::muted()
             } else if patch.selected {
@@ -149,7 +160,8 @@ impl Widget for &PatchSelectScreen {
             };
             buf.set_string(inner_x + 2, y, checkbox, checkbox_style);
 
-            // Name
+            // Name with patch count
+            let name_with_count = format!("{} ({})", patch.name, patch.patch_count);
             let name_style = if !patch.compatible {
                 theme::muted()
             } else if is_cursor {
@@ -157,15 +169,18 @@ impl Widget for &PatchSelectScreen {
             } else {
                 theme::normal()
             };
-            buf.set_string(inner_x + 6, y, &patch.name, name_style);
+            buf.set_string(inner_x + 6, y, &name_with_count, name_style);
 
-            // Description (truncate to fit width)
-            let max_desc_width = list_area.width.saturating_sub(12) as usize;
-            let desc_prefix = "└─ \"";
-            let available = max_desc_width.saturating_sub(desc_prefix.len() + 1); // +1 for closing quote
-            let truncated_desc = truncate_str(&patch.description, available);
-            let desc = format!("    {}{}\"", desc_prefix, truncated_desc);
-            buf.set_string(inner_x + 2, y + 1, &desc, theme::muted());
+            // Description (truncate to fit remaining width)
+            let name_end = inner_x + 6 + name_with_count.len() as u16 + 2;
+            let available_width = list_area
+                .x
+                .saturating_add(list_area.width)
+                .saturating_sub(name_end + 2) as usize;
+            if available_width > 4 {
+                let truncated = truncate_str(&patch.description, available_width);
+                buf.set_string(name_end, y, truncated, theme::muted());
+            }
         }
 
         // Compatibility panel
@@ -184,9 +199,15 @@ impl Widget for &PatchSelectScreen {
         // Compatibility info
         let selected = self.patches.iter().filter(|p| p.selected).count();
         let compatible = self.patches.iter().filter(|p| p.compatible).count();
+        let total_patches: usize = self
+            .patches
+            .iter()
+            .filter(|p| p.selected)
+            .map(|p| p.patch_count)
+            .sum();
         let compat_msg = format!(
-            "  {} selected / {} compatible with {}",
-            selected, compatible, self.target_version
+            "  {} files / {} patches selected / {} compatible with {}",
+            selected, total_patches, compatible, self.target_version
         );
 
         let all_ok = self

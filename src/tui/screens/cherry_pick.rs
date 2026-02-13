@@ -1,4 +1,4 @@
-//! Text input screen for clone destination
+//! Dev-mode cherry-pick screen (comma-separated SHAs)
 
 use crate::tui::theme::{self, center_x, jp};
 use crate::tui::widgets::Panel;
@@ -10,42 +10,38 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-/// Text input screen
-pub struct InputScreen {
+/// Text input screen for cherry-picking commit SHAs.
+pub struct CherryPickScreen {
     frame: u64,
-    prompt: String,
+    target_tag: String,
     value: String,
     cursor_pos: usize,
     placeholder: String,
+    status: Option<String>,
 }
 
-impl InputScreen {
-    pub fn new(prompt: impl Into<String>) -> Self {
+impl CherryPickScreen {
+    pub fn new(target_tag: impl Into<String>) -> Self {
         Self {
             frame: 0,
-            prompt: prompt.into(),
+            target_tag: target_tag.into(),
             value: String::new(),
             cursor_pos: 0,
-            placeholder: String::new(),
+            placeholder: "abc1234, def5678".to_string(),
+            status: None,
         }
     }
 
-    pub fn placeholder(mut self, text: impl Into<String>) -> Self {
-        self.placeholder = text.into();
-        self
-    }
-
-    pub fn initial_value(mut self, text: impl Into<String>) -> Self {
+    pub fn set_value(&mut self, text: impl Into<String>) {
         self.value = text.into();
         self.cursor_pos = self.value.chars().count();
-        self
     }
 
     pub fn tick(&mut self) {
         self.frame += 1;
     }
 
-    /// Convert character position to byte index
+    /// Convert character position to byte index.
     fn char_to_byte_index(&self, char_pos: usize) -> usize {
         self.value
             .char_indices()
@@ -101,12 +97,16 @@ impl InputScreen {
         &self.value
     }
 
-    pub fn frame(&self) -> u64 {
-        self.frame
+    pub fn status(&self) -> Option<&str> {
+        self.status.as_deref()
+    }
+
+    pub fn set_status(&mut self, status: Option<String>) {
+        self.status = status;
     }
 }
 
-impl Widget for &InputScreen {
+impl Widget for &CherryPickScreen {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Clear background
         for y in area.y..(area.y + area.height) {
@@ -119,14 +119,14 @@ impl Widget for &InputScreen {
             Constraint::Length(4), // Header
             Constraint::Length(1), // Spacer
             Constraint::Length(5), // Input panel
-            Constraint::Length(2), // Info
+            Constraint::Length(3), // Info
             Constraint::Min(2),    // Spacer
             Constraint::Length(2), // Help
         ])
         .split(area);
 
         // Header
-        let header_line = format!("░▒▓█ CLONE REPOSITORY //{} █▓▒░", jp::TARGET_SELECT);
+        let header_line = format!("░▒▓█ CHERRY-PICK //{} █▓▒░", jp::CHERRY_PICK);
         let header_w = UnicodeWidthStr::width(header_line.as_str()) as u16;
         let header_x = center_x(area.x, area.width, header_w);
         buf.set_string(header_x, chunks[0].y + 1, &header_line, theme::title());
@@ -139,7 +139,9 @@ impl Widget for &InputScreen {
             height: chunks[2].height,
         };
 
-        let panel = Panel::new().title(&self.prompt).focused(true);
+        let panel = Panel::new()
+            .title("Cherry-pick commits (comma-separated SHAs, empty to skip)")
+            .focused(true);
         panel.render(input_area, buf);
 
         // Input value
@@ -159,14 +161,13 @@ impl Widget for &InputScreen {
             theme::normal()
         };
 
-        // Truncate if needed, keeping cursor visible (using character counts)
+        // Truncate if needed, keeping cursor visible (using character counts).
         let char_count = display_value.chars().count();
         let (display, cursor_offset) = if char_count > max_visible {
             let start_char = self.cursor_pos.saturating_sub(max_visible / 2);
             let end_char = (start_char + max_visible).min(char_count);
             let start_char = end_char.saturating_sub(max_visible);
 
-            // Convert character positions to byte indices for slicing
             let start_byte = display_value
                 .char_indices()
                 .nth(start_char)
@@ -190,7 +191,7 @@ impl Widget for &InputScreen {
 
         // Cursor
         let cursor_visible = (self.frame / 30).is_multiple_of(2);
-        if cursor_visible && !self.value.is_empty() {
+        if cursor_visible {
             let cursor_x = value_x + cursor_offset as u16;
             buf.set_string(
                 cursor_x,
@@ -200,25 +201,32 @@ impl Widget for &InputScreen {
                     .fg(theme::CYAN)
                     .add_modifier(Modifier::BOLD),
             );
-        } else if self.value.is_empty() && cursor_visible {
-            buf.set_string(
-                value_x,
-                value_y,
-                "▎",
-                Style::default()
-                    .fg(theme::CYAN)
-                    .add_modifier(Modifier::BOLD),
-            );
         }
 
         // Info text
-        let info = "Will clone: https://github.com/openai/codex.git";
-        let info_x = area.x + (area.width.saturating_sub(info.len() as u16)) / 2;
-        buf.set_string(info_x, chunks[3].y, info, theme::secondary());
+        let url = format!(
+            "Compare: https://github.com/openai/codex/compare/{}...main",
+            self.target_tag
+        );
+        let url_w = UnicodeWidthStr::width(url.as_str()) as u16;
+        let url_x = center_x(area.x, area.width, url_w);
+        buf.set_string(url_x, chunks[3].y, &url, theme::secondary());
+
+        if let Some(status) = &self.status {
+            let status_w = UnicodeWidthStr::width(status.as_str()) as u16;
+            let status_x = center_x(area.x, area.width, status_w);
+            buf.set_string(status_x, chunks[3].y + 1, status, theme::warning());
+        } else {
+            let hint = "Tip: use 7+ hex chars per SHA; invalid entries will be ignored";
+            let hint_w = UnicodeWidthStr::width(hint) as u16;
+            let hint_x = center_x(area.x, area.width, hint_w);
+            buf.set_string(hint_x, chunks[3].y + 1, hint, theme::muted());
+        }
 
         // Help text
-        let help = "[ENTER] Clone  [ESC] Cancel";
-        let help_x = area.x + (area.width.saturating_sub(help.len() as u16)) / 2;
+        let help = "[ENTER] Continue  [ESC] Back";
+        let help_w = UnicodeWidthStr::width(help) as u16;
+        let help_x = center_x(area.x, area.width, help_w);
         buf.set_string(help_x, chunks[5].y, help, theme::muted());
     }
 }

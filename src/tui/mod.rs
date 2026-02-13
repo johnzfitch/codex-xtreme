@@ -7,6 +7,7 @@ pub mod screens;
 pub mod theme;
 pub mod widgets;
 
+use anyhow::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
@@ -104,4 +105,38 @@ pub fn spawn_event_reader() -> mpsc::UnboundedReceiver<TermEvent> {
     });
 
     rx
+}
+
+/// Run the full-screen TUI application.
+///
+/// This is shared by both the `cx` binary and `codex-xtreme --tui` so behavior stays aligned.
+pub async fn run_app(dev_mode: bool, cargo_jobs: Option<usize>) -> Result<()> {
+    use crate::app::App;
+    use ratatui::widgets::Widget;
+
+    let mut tui = Tui::new()?;
+    let mut app = App::new(dev_mode, cargo_jobs);
+    let mut events = spawn_event_reader();
+
+    loop {
+        tui.terminal().draw(|frame| {
+            let area = frame.area();
+            (&app.screen).render(area, frame.buffer_mut());
+        })?;
+
+        if let Some(event) = events.recv().await {
+            match event {
+                TermEvent::Key(key) => app.handle_key(key),
+                TermEvent::Tick => app.tick(),
+                TermEvent::Resize(_, _) => {}
+            }
+        }
+
+        if app.should_quit {
+            break;
+        }
+    }
+
+    tui.restore()?;
+    Ok(())
 }

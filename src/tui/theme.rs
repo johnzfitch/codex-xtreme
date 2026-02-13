@@ -142,6 +142,7 @@ pub mod jp {
     pub const SYSTEM_BOOT: &str = "システム起動中";
     pub const TARGET_SELECT: &str = "ターゲット選択";
     pub const VERSION_SELECT: &str = "バージョン選択";
+    pub const CHERRY_PICK: &str = "チェリーピック";
     pub const PATCH_LOAD: &str = "パッチ読込";
     pub const BUILD_CONFIG: &str = "ビルド設定";
     pub const COMPILING: &str = "コンパイル中";

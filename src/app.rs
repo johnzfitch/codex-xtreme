@@ -3,7 +3,6 @@
 use crate::core;
 use crate::tui::screens::BuildPhase;
 use crate::tui::screens::*;
-use codex_patcher::{apply_patches, load_from_path, PatchResult};
 use crossterm::event::KeyCode;
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use std::path::PathBuf;
@@ -18,6 +17,7 @@ pub enum Screen {
     CloneInput(InputScreen),
     Cloning(CloneScreen),
     VersionSelect(VersionSelectScreen),
+    CherryPick(CherryPickScreen),
     PatchSelect(PatchSelectScreen),
     BuildConfig(BuildConfigScreen),
     Build(BuildScreen),
@@ -31,6 +31,7 @@ impl Screen {
             Screen::CloneInput(s) => s.tick(),
             Screen::Cloning(s) => s.tick(),
             Screen::VersionSelect(s) => s.tick(),
+            Screen::CherryPick(s) => s.tick(),
             Screen::PatchSelect(s) => s.tick(),
             Screen::BuildConfig(s) => s.tick(),
             Screen::Build(s) => s.tick(),
@@ -46,6 +47,7 @@ impl Widget for &Screen {
             Screen::CloneInput(s) => s.render(area, buf),
             Screen::Cloning(s) => s.render(area, buf),
             Screen::VersionSelect(s) => s.render(area, buf),
+            Screen::CherryPick(s) => s.render(area, buf),
             Screen::PatchSelect(s) => s.render(area, buf),
             Screen::BuildConfig(s) => s.render(area, buf),
             Screen::Build(s) => s.render(area, buf),
@@ -75,16 +77,21 @@ pub struct App {
     pub screen: Screen,
     pub should_quit: bool,
     pub dev_mode: bool,
+    pub cargo_jobs: Option<usize>,
     // Collected data
     pub selected_repo: Option<PathBuf>,
     pub selected_version: Option<String>,
+    pub cherry_pick_shas: Vec<String>,
     pub selected_patches: Vec<PathBuf>, // Now stores patch file paths
+    pub build_options: Option<crate::workflow::BuildOptions>,
+    pub run_tests: bool,
+    pub setup_alias: bool,
     // Background task channels
     build_rx: Option<mpsc::Receiver<BuildMessage>>,
 }
 
 impl App {
-    pub fn new(dev_mode: bool) -> Self {
+    pub fn new(dev_mode: bool, cargo_jobs: Option<usize>) -> Self {
         let mut boot = BootScreen::new(dev_mode);
 
         // Real system checks
@@ -125,9 +132,14 @@ impl App {
             screen: Screen::Boot(boot),
             should_quit: false,
             dev_mode,
+            cargo_jobs,
             selected_repo: None,
             selected_version: None,
+            cherry_pick_shas: Vec::new(),
             selected_patches: Vec::new(),
+            build_options: None,
+            run_tests: true,
+            setup_alias: true,
             build_rx: None,
         }
     }
@@ -239,8 +251,13 @@ impl App {
             Screen::Cloning(s) if s.is_error() => self.transition_to_repo_select(),
             Screen::Cloning(_) => {}
             Screen::VersionSelect(_) => self.transition_to_repo_select(),
+            Screen::CherryPick(_) => self.transition_to_version_select(),
             Screen::PatchSelect(_) => {
-                self.transition_to_version_select();
+                if self.dev_mode {
+                    self.transition_to_cherry_pick();
+                } else {
+                    self.transition_to_version_select();
+                }
             }
             Screen::BuildConfig(_) => {
                 self.transition_to_patch_select();
@@ -311,8 +328,60 @@ impl App {
                 KeyCode::Enter => {
                     if let Some(ver) = screen.selected_version() {
                         self.selected_version = Some(ver.tag.clone());
-                        self.transition_to_patch_select();
+                        self.cherry_pick_shas.clear();
+                        // Dev-mode cherry-pick happens on a clean checkout, before patching.
+                        if self.dev_mode {
+                            self.transition_to_cherry_pick();
+                        } else {
+                            self.transition_to_patch_select();
+                        }
                     }
+                }
+                _ => {}
+            },
+
+            Screen::CherryPick(screen) => match key {
+                KeyCode::Char(c) => screen.insert_char(c),
+                KeyCode::Backspace => screen.delete_char(),
+                KeyCode::Delete => screen.delete_forward(),
+                KeyCode::Left => screen.move_left(),
+                KeyCode::Right => screen.move_right(),
+                KeyCode::Home => screen.move_home(),
+                KeyCode::End => screen.move_end(),
+                KeyCode::Enter => {
+                    let input = screen.value().to_string();
+                    let mut shas = Vec::new();
+                    let mut invalid = Vec::new();
+
+                    for part in input.split(',') {
+                        let s = part.trim();
+                        if s.is_empty() {
+                            continue;
+                        }
+                        let valid = s.len() >= 7
+                            && s.len() <= 40
+                            && s.chars().all(|c| c.is_ascii_hexdigit());
+                        if valid {
+                            shas.push(s.to_string());
+                        } else {
+                            invalid.push(s.to_string());
+                        }
+                    }
+
+                    if !invalid.is_empty() && screen.status().is_none() {
+                        screen.set_status(Some(format!(
+                            "Ignored invalid SHA(s): {}",
+                            invalid
+                                .iter()
+                                .map(|s| s.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )));
+                        return;
+                    }
+
+                    self.cherry_pick_shas = shas;
+                    self.transition_to_patch_select();
                 }
                 _ => {}
             },
@@ -324,18 +393,8 @@ impl App {
                 KeyCode::Char('a') | KeyCode::Char('A') => screen.select_all(),
                 KeyCode::Char('n') | KeyCode::Char('N') => screen.select_none(),
                 KeyCode::Enter => {
-                    // Collect patch names first to avoid borrow issues
-                    let patch_names: Vec<String> = screen
-                        .selected_patches()
-                        .iter()
-                        .map(|p| p.name.clone())
-                        .collect();
-
-                    // Now resolve paths (no longer borrowing screen)
-                    self.selected_patches = patch_names
-                        .iter()
-                        .filter_map(|name| self.resolve_patch_path(name))
-                        .collect();
+                    self.selected_patches =
+                        screen.selected_patch_paths().into_iter().cloned().collect();
                     self.transition_to_build_config();
                 }
                 _ => {}
@@ -346,6 +405,28 @@ impl App {
                 KeyCode::Down => screen.select_next(),
                 KeyCode::Char(' ') => screen.toggle_current(),
                 KeyCode::Enter => {
+                    let cpu = core::detect_cpu_target();
+                    let cpu_target = if screen.optimize_cpu() {
+                        Some(cpu.rustc_target_cpu().to_string())
+                    } else {
+                        None
+                    };
+
+                    let profile = if screen.use_xtreme_profile() {
+                        "xtreme".to_string()
+                    } else {
+                        "release".to_string()
+                    };
+
+	                    self.build_options = Some(crate::workflow::BuildOptions {
+	                        profile,
+	                        cpu_target,
+	                        optimization: screen.optimization_flags(),
+	                        strip_symbols: screen.strip_symbols(),
+	                        cargo_jobs: self.cargo_jobs,
+	                    });
+                    self.run_tests = screen.run_tests();
+                    self.setup_alias = screen.setup_alias();
                     self.start_build();
                 }
                 _ => {}
@@ -361,23 +442,6 @@ impl App {
                 }
                 _ => {}
             },
-        }
-    }
-
-    /// Resolve patch name to full path
-    fn resolve_patch_path(&self, name: &str) -> Option<PathBuf> {
-        let patches_dir = core::find_patches_dir().ok()?;
-        let path = patches_dir.join(format!("{}.toml", name));
-        if path.exists() {
-            Some(path)
-        } else {
-            // Try without adding .toml
-            let path = patches_dir.join(name);
-            if path.exists() {
-                Some(path)
-            } else {
-                None
-            }
         }
     }
 
@@ -468,24 +532,33 @@ impl App {
         let patches: Vec<PatchInfo> = available
             .into_iter()
             .map(|(path, config)| {
-                let name = path
-                    .file_stem()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| config.meta.name.clone());
+                let compatible =
+                    core::is_patch_compatible(config.meta.version_range.as_deref(), &version);
 
                 PatchInfo {
-                    name,
+                    path,
+                    name: config.meta.name.clone(),
                     description: config
                         .meta
                         .description
                         .unwrap_or_else(|| config.meta.name.clone()),
-                    selected: true, // Auto-select all patches
-                    compatible: true,
+                    patch_count: config.patches.len(),
+                    selected: compatible,
+                    compatible,
                 }
             })
             .collect();
 
         self.screen = Screen::PatchSelect(PatchSelectScreen::new(patches, version));
+    }
+
+    fn transition_to_cherry_pick(&mut self) {
+        let version = self.selected_version.clone().unwrap_or_default();
+        let mut screen = CherryPickScreen::new(version);
+        if !self.cherry_pick_shas.is_empty() {
+            screen.set_value(self.cherry_pick_shas.join(", "));
+        }
+        self.screen = Screen::CherryPick(screen);
     }
 
     fn transition_to_build_config(&mut self) {
@@ -535,7 +608,23 @@ impl App {
         };
 
         let patches = self.selected_patches.clone();
+        let cherry_pick_shas = self.cherry_pick_shas.clone();
         let workspace = repo_path.join(core::CODEX_RS_SUBDIR);
+        let build_options = match &self.build_options {
+            Some(o) => o.clone(),
+	            None => crate::workflow::BuildOptions {
+	                profile: "xtreme".to_string(),
+	                cpu_target: Some(core::detect_cpu_target().rustc_target_cpu().to_string()),
+	                optimization: crate::workflow::OptimizationFlags {
+	                    use_mold: false,
+	                    use_bolt: core::has_bolt(),
+	                },
+	                strip_symbols: true,
+	                cargo_jobs: self.cargo_jobs,
+	            },
+	        };
+        let run_tests = self.run_tests;
+        let setup_alias = self.setup_alias;
 
         // Create channel for progress updates
         let (tx, rx) = mpsc::channel();
@@ -543,7 +632,17 @@ impl App {
 
         // Spawn background build thread
         thread::spawn(move || {
-            run_build(tx, repo_path, workspace, version, patches);
+            run_build(
+                tx,
+                repo_path,
+                workspace,
+                version,
+                cherry_pick_shas,
+                patches,
+                build_options,
+                run_tests,
+                setup_alias,
+            );
         });
     }
 }
@@ -554,7 +653,11 @@ fn run_build(
     repo_path: PathBuf,
     workspace: PathBuf,
     version: String,
+    cherry_pick_shas: Vec<String>,
     patches: Vec<PathBuf>,
+    build_options: crate::workflow::BuildOptions,
+    run_tests: bool,
+    setup_alias: bool,
 ) {
     let start_time = Instant::now();
 
@@ -563,28 +666,11 @@ fn run_build(
         let _ = tx.send(msg);
     };
 
-    // Calculate install path
-    let install_path = dirs::home_dir()
-        .map(|h| h.join(".cargo/bin/codex"))
-        .unwrap_or_else(|| PathBuf::from("~/.cargo/bin/codex"));
-
-    // Send version and install path info
+    // CLI-equivalent workflow:
+    // checkout -> optional cherry-pick -> apply patches -> build -> optional BOLT -> optional strip
+    // -> optional tests -> optional alias setup.
     send(BuildMessage::Version(version.clone()));
-    send(BuildMessage::InstallPath(install_path.to_string_lossy().to_string()));
-
-    // Get changelog/release notes (git log between current HEAD and target version)
-    if let Ok(output) = std::process::Command::new("git")
-        .current_dir(&repo_path)
-        .args(["log", "--oneline", "-10", &format!("{}..HEAD", version)])
-        .output()
-    {
-        let log_output = String::from_utf8_lossy(&output.stdout);
-        for line in log_output.lines().take(5) {
-            if !line.trim().is_empty() {
-                send(BuildMessage::Log(format!("  {}", line)));
-            }
-        }
-    }
+    send(BuildMessage::InstallPath("shell alias".to_string()));
 
     // Phase 1: Checkout version
     send(BuildMessage::Phase(BuildPhase::Patching));
@@ -593,441 +679,188 @@ fn run_build(
         version
     )));
     send(BuildMessage::Log(format!("git checkout {}", version)));
-
     if let Err(e) = core::checkout_version(&repo_path, &version) {
         send(BuildMessage::Error(format!("Checkout failed: {}", e)));
         return;
     }
-    send(BuildMessage::Progress(0.02));
-    send(BuildMessage::Log("Checkout complete".to_string()));
 
-    // Phase 2: Apply patches
-    if !patches.is_empty() {
-        send(BuildMessage::CurrentItem("Applying patches...".to_string()));
-
-        // Read workspace version for patch compatibility
-        let workspace_version =
-            read_workspace_version(&workspace).unwrap_or_else(|_| "0.0.0".to_string());
-
-        let total_patches = patches.len();
-        for (i, patch_path) in patches.iter().enumerate() {
-            let patch_name = patch_path
-                .file_stem()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-
-            send(BuildMessage::CurrentItem(format!(
-                "Applying {}...",
-                patch_name
-            )));
-            send(BuildMessage::Log(format!(
-                "Loading {}",
-                patch_path.display()
-            )));
-
-            match load_from_path(patch_path) {
-                Ok(config) => {
+    // Optional: cherry-pick commits (dev mode)
+    if !cherry_pick_shas.is_empty() {
+        send(BuildMessage::CurrentItem(format!(
+            "Cherry-picking {} commits...",
+            cherry_pick_shas.len()
+        )));
+        match core::cherry_pick_commits(&repo_path, &cherry_pick_shas) {
+            Ok(outcome) => {
+                if !outcome.skipped.is_empty() {
                     send(BuildMessage::Log(format!(
-                        "  Applying {} patches from config...",
-                        config.patches.len()
+                        "  ⚠ skipped {} conflicting commit(s): {}",
+                        outcome.skipped.len(),
+                        outcome
+                            .skipped
+                            .iter()
+                            .map(|s| &s[..7.min(s.len())])
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     )));
-
-                    // Catch panics in apply_patches
-                    let results = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        apply_patches(&config, &workspace, &workspace_version)
-                    }));
-
-                    let results = match results {
-                        Ok(r) => r,
-                        Err(panic_info) => {
-                            let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                                s.to_string()
-                            } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                                s.clone()
-                            } else {
-                                "Unknown panic".to_string()
-                            };
-                            send(BuildMessage::Error(format!(
-                                "Patch application panicked: {}",
-                                panic_msg
-                            )));
-                            send(BuildMessage::Log(format!(
-                                "ERROR: Panic in apply_patches for {}: {}",
-                                patch_name, panic_msg
-                            )));
-                            return;
-                        }
-                    };
-
-                    let mut applied_count = 0;
-                    let mut skipped_count = 0;
-                    let mut skip_reason = String::new();
-
-                    for (patch_id, result) in results {
-                        match result {
-                            Ok(PatchResult::Applied { file }) => {
-                                send(BuildMessage::Log(format!(
-                                    "  ✓ {} → {}",
-                                    patch_id,
-                                    file.display()
-                                )));
-                                applied_count += 1;
-                            }
-                            Ok(PatchResult::AlreadyApplied { .. }) => {
-                                send(BuildMessage::Log(format!(
-                                    "  ○ {} (already applied)",
-                                    patch_id
-                                )));
-                                // Already applied counts as success
-                                applied_count += 1;
-                            }
-                            Ok(PatchResult::SkippedVersion { reason }) => {
-                                send(BuildMessage::Log(format!("  ⊘ {} ({})", patch_id, reason)));
-                                skipped_count += 1;
-                                if skip_reason.is_empty() {
-                                    skip_reason = reason;
-                                }
-                            }
-                            Ok(PatchResult::Failed { reason, .. }) => {
-                                send(BuildMessage::Log(format!("  ✗ {} ({})", patch_id, reason)));
-                                skipped_count += 1;
-                                if skip_reason.is_empty() {
-                                    skip_reason = reason;
-                                }
-                            }
-                            Err(e) => {
-                                send(BuildMessage::Log(format!("  ✗ {} ({})", patch_id, e)));
-                                skipped_count += 1;
-                                if skip_reason.is_empty() {
-                                    skip_reason = e.to_string();
-                                }
-                            }
-                        }
-                    }
-
-                    if applied_count > 0 {
-                        send(BuildMessage::PatchApplied(patch_name.clone()));
-                    }
-                    if skipped_count > 0 && applied_count == 0 {
-                        // Only show as skipped if ALL patches in this file were skipped
-                        send(BuildMessage::PatchSkipped(patch_name, skip_reason));
-                    }
-                }
-                Err(e) => {
-                    send(BuildMessage::Log(format!("  ✗ Failed to load: {}", e)));
-                    send(BuildMessage::PatchSkipped(
-                        patch_name,
-                        format!("load error: {}", e),
-                    ));
                 }
             }
-
-            // Patching is 2-5% of total progress
-            let progress = 0.02 + (0.03 * (i + 1) as f64 / total_patches as f64);
-            send(BuildMessage::Progress(progress));
+            Err(e) => send(BuildMessage::Log(format!(
+                "  ⚠ cherry-pick errored: {} (continuing)",
+                e
+            ))),
         }
     }
 
-    // Phase 3: Compile
-    send(BuildMessage::Phase(BuildPhase::Compiling));
-    send(BuildMessage::Progress(0.05));
-    send(BuildMessage::CurrentItem(
-        "Building codex-cli...".to_string(),
-    ));
-
-    // Check if xtreme profile exists (added by xtreme-profile patch)
-    // Fall back to release if not present
-    let cargo_toml = workspace.join("Cargo.toml");
-    let profile = if let Ok(contents) = std::fs::read_to_string(&cargo_toml) {
-        if contents.contains("[profile.xtreme]") {
-            "xtreme"
-        } else {
-            send(BuildMessage::Log(
-                "xtreme profile not found, using release".to_string(),
-            ));
-            "release"
-        }
-    } else {
-        "release"
-    };
-
-    send(BuildMessage::Log(format!(
-        "cargo build --profile {} -p codex-cli",
-        profile
-    )));
-
-    // Run cargo build
-    let mut cmd = std::process::Command::new("cargo");
-    cmd.current_dir(&workspace)
-        .args(["build", "--profile", profile, "-p", "codex-cli"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-
-    match cmd.spawn() {
-        Ok(mut child) => {
-            // Read stderr for progress
-            if let Some(stderr) = child.stderr.take() {
-                use std::io::{BufRead, BufReader};
-                let reader = BufReader::new(stderr);
-                let mut compile_count = 0;
-                // Codex has ~350 crates to compile
-                let estimated_total_crates = 350.0;
-
-                for line in reader.lines().map_while(Result::ok) {
-                    // Parse cargo output for progress
-                    if line.contains("Compiling") {
-                        compile_count += 1;
-
-                        // Use ease-out curve: progress slows as we approach end
-                        // Linear progress from crate count
-                        let linear = (compile_count as f64 / estimated_total_crates).min(1.0);
-                        // Apply ease-out: fast start, slow finish (matches real build times)
-                        // Using cubic ease-out: 1 - (1-x)^3
-                        let eased = 1.0 - (1.0 - linear).powi(3);
-                        // Map to 5-85% range (leave room for verify/install phases)
-                        let progress = 0.05 + (0.80 * eased);
-                        send(BuildMessage::Progress(progress));
-
-                        // Extract crate name
-                        if let Some(crate_name) = line.split_whitespace().nth(1) {
-                            send(BuildMessage::CurrentItem(format!(
-                                "Compiling {} ({}/{})...",
-                                crate_name,
-                                compile_count,
-                                estimated_total_crates as i32
-                            )));
-                        }
-
-                        // Stream compilation output to log
-                        send(BuildMessage::Log(line));
-                    } else if line.contains("Finished") {
-                        send(BuildMessage::Log(line));
-                    } else if line.contains("warning:") {
-                        send(BuildMessage::Log(line));
-                    } else if line.contains("error") || line.contains("Error") {
-                        send(BuildMessage::Log(line));
-                    }
-                }
+    // Phase 2: Apply patches
+    if !patches.is_empty() {
+        if let Err(e) = crate::workflow::apply_patches(&workspace, &patches, |ev| match ev {
+            crate::workflow::Event::Phase(_) => {}
+            crate::workflow::Event::Progress(p) => send(BuildMessage::Progress(0.02 + 0.08 * p)),
+            crate::workflow::Event::CurrentItem(s) => send(BuildMessage::CurrentItem(s)),
+            crate::workflow::Event::Log(s) => send(BuildMessage::Log(s)),
+            crate::workflow::Event::PatchFileApplied(name) => {
+                send(BuildMessage::PatchApplied(name))
             }
-
-            match child.wait() {
-                Ok(status) if status.success() => {
-                    send(BuildMessage::Progress(0.85));
-                }
-                Ok(status) => {
-                    send(BuildMessage::Error(format!(
-                        "Build failed with exit code: {:?}",
-                        status.code()
-                    )));
-                    return;
-                }
-                Err(e) => {
-                    send(BuildMessage::Error(format!("Build process error: {}", e)));
-                    return;
-                }
+            crate::workflow::Event::PatchFileSkipped { name, reason } => {
+                send(BuildMessage::PatchSkipped(name, reason))
             }
-        }
-        Err(e) => {
-            send(BuildMessage::Error(format!("Failed to start cargo: {}", e)));
+        }) {
+            send(BuildMessage::Error(format!(
+                "Patch application failed: {}",
+                e
+            )));
             return;
         }
     }
 
-    // Find the built binary (profile xtreme outputs to target/xtreme/)
-    let binary_path = workspace.join(format!("target/{}/codex", profile));
-
-    // Phase 4: Verify (85% → 92%)
-    send(BuildMessage::Phase(BuildPhase::Installing)); // Reuse as "Verifying"
-    send(BuildMessage::Progress(0.88));
-    send(BuildMessage::CurrentItem("Verifying build...".to_string()));
-    send(BuildMessage::Log("Running codex --version".to_string()));
-
-    // Quick verification - just check the binary runs
-    if binary_path.exists() {
-        match std::process::Command::new(&binary_path)
-            .arg("--version")
-            .output()
-        {
-            Ok(output) if output.status.success() => {
-                let version = String::from_utf8_lossy(&output.stdout);
-                send(BuildMessage::Log(format!("  ✓ {}", version.trim())));
-            }
-            Ok(_) => {
-                send(BuildMessage::Log("  ⚠ Binary runs but --version failed".to_string()));
-            }
-            Err(e) => {
-                send(BuildMessage::Log(format!("  ✗ Failed to run binary: {}", e)));
-            }
-        }
-    } else {
-        send(BuildMessage::Log(format!(
-            "  ✗ Binary not found at {}",
-            binary_path.display()
-        )));
-    }
-
-    // Phase 5: Install to PATH (92% → 99%)
-    send(BuildMessage::Progress(0.94));
-    send(BuildMessage::CurrentItem("Installing to PATH...".to_string()));
-
-    #[cfg(unix)]
-    {
-        // Use ~/.local/bin on Unix (Linux/macOS)
-        let local_bin = dirs::home_dir()
-            .map(|h| h.join(".local/bin"))
-            .unwrap_or_else(|| std::path::PathBuf::from("/usr/local/bin"));
-
-        // Create ~/.local/bin if it doesn't exist
-        if !local_bin.exists() {
-            let _ = std::fs::create_dir_all(&local_bin);
+    // Phase 3: Compile (with autofix)
+    if build_options.profile == "xtreme" {
+        if let Err(e) = crate::workflow::inject_xtreme_profile(&workspace) {
             send(BuildMessage::Log(format!(
-                "  Created {}",
-                local_bin.display()
+                "  ⚠ Failed to inject xtreme profile: {} (continuing)",
+                e
             )));
         }
+    }
 
-        let symlink_path = local_bin.join("codex");
+    send(BuildMessage::Phase(BuildPhase::Compiling));
+    send(BuildMessage::CurrentItem(format!(
+        "Building codex-cli (profile {})...",
+        build_options.profile
+    )));
 
-        // Remove old symlink/file if exists
-        if symlink_path.exists() || symlink_path.is_symlink() {
-            let _ = std::fs::remove_file(&symlink_path);
+	    let mut binary_path = match crate::workflow::build_with_autofix(
+	        &workspace,
+	        &build_options.profile,
+	        build_options.cpu_target.as_deref(),
+	        &build_options.optimization,
+	        build_options.cargo_jobs,
+	        |ev| match ev {
+	            crate::workflow::Event::Phase(_) => {}
+	            crate::workflow::Event::Progress(p) => send(BuildMessage::Progress(0.10 + 0.75 * p)),
+	            crate::workflow::Event::CurrentItem(s) => send(BuildMessage::CurrentItem(s)),
+	            crate::workflow::Event::Log(s) => send(BuildMessage::Log(s)),
+            crate::workflow::Event::PatchFileApplied(_) => {}
+            crate::workflow::Event::PatchFileSkipped { .. } => {}
+        },
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            send(BuildMessage::Error(format!("Build failed: {}", e)));
+            return;
         }
+    };
+    send(BuildMessage::Progress(0.85));
 
-        // Create symlink
-        match std::os::unix::fs::symlink(&binary_path, &symlink_path) {
-            Ok(_) => {
-                send(BuildMessage::Log(format!(
-                    "  ✓ Linked {} → codex",
-                    local_bin.display()
-                )));
-
-                // Check if ~/.local/bin is in PATH
-                let path_var = std::env::var("PATH").unwrap_or_default();
-                let local_bin_str = local_bin.to_string_lossy();
-                if !path_var.contains(local_bin_str.as_ref()) {
-                    send(BuildMessage::Log(format!(
-                        "  ⚠ {} not in PATH - add to your shell rc:",
-                        local_bin.display()
-                    )));
-                    send(BuildMessage::Log(
-                        "    export PATH=\"$HOME/.local/bin:$PATH\"".to_string(),
-                    ));
-                }
+    // Optional: BOLT
+    if build_options.optimization.use_bolt {
+        match crate::workflow::run_bolt_optimization(&binary_path, |ev| match ev {
+            crate::workflow::Event::Phase(_) => {}
+            crate::workflow::Event::Progress(p) => send(BuildMessage::Progress(0.85 + 0.07 * p)),
+            crate::workflow::Event::CurrentItem(s) => send(BuildMessage::CurrentItem(s)),
+            crate::workflow::Event::Log(s) => send(BuildMessage::Log(s)),
+            crate::workflow::Event::PatchFileApplied(_) => {}
+            crate::workflow::Event::PatchFileSkipped { .. } => {}
+        }) {
+            Ok(bolted) => {
+                binary_path = bolted;
+                send(BuildMessage::Log("BOLT optimization complete".to_string()));
             }
-            Err(e) => {
-                send(BuildMessage::Log(format!(
-                    "  ✗ Symlink failed: {}",
-                    e
-                )));
-                send(BuildMessage::Log(format!(
-                    "    Run: ln -sf {} {}",
-                    binary_path.display(),
-                    symlink_path.display()
-                )));
-            }
+            Err(e) => send(BuildMessage::Log(format!(
+                "BOLT failed: {} (continuing)",
+                e
+            ))),
         }
     }
 
-    #[cfg(windows)]
-    {
-        // On Windows, copy binary to %LOCALAPPDATA%\Programs\codex-xtreme
-        let install_dir = dirs::data_local_dir()
-            .map(|d| d.join("Programs").join("codex-xtreme"))
-            .unwrap_or_else(|| std::path::PathBuf::from("C:\\codex-xtreme"));
-
-        if !install_dir.exists() {
-            let _ = std::fs::create_dir_all(&install_dir);
+    // Optional: strip
+    if build_options.strip_symbols {
+        send(BuildMessage::CurrentItem(
+            "Stripping symbols...".to_string(),
+        ));
+        if let Err(e) = crate::workflow::strip_binary(&binary_path) {
+            send(BuildMessage::Log(format!(
+                "  ⚠ strip failed: {} (continuing)",
+                e
+            )));
         }
+    }
 
-        let dest_path = install_dir.join("codex.exe");
-
-        match std::fs::copy(&binary_path, &dest_path) {
-            Ok(_) => {
-                send(BuildMessage::Log(format!(
-                    "  ✓ Copied to {}",
-                    dest_path.display()
-                )));
-
-                // Check if already in PATH
-                let path_var = std::env::var("PATH").unwrap_or_default();
-                let install_dir_str = install_dir.to_string_lossy();
-
-                if path_var.contains(install_dir_str.as_ref()) {
-                    send(BuildMessage::Log("  ✓ Already in PATH".to_string()));
-                } else {
-                    // Try setx automatically
-                    send(BuildMessage::Log("  Adding to PATH...".to_string()));
-
-                    let setx_result = std::process::Command::new("setx")
-                        .args(["PATH", &format!("{};{}", path_var, install_dir.display())])
-                        .output();
-
-                    match setx_result {
-                        Ok(output) if output.status.success() => {
-                            send(BuildMessage::Log(
-                                "  ✓ Added to PATH (restart terminal to use)".to_string()
-                            ));
-                        }
-                        _ => {
-                            // setx failed - show manual options
-                            send(BuildMessage::Log(
-                                "  ⚠ Auto-add failed. Manual options:".to_string()
-                            ));
-                            send(BuildMessage::Log(String::new()));
-                            send(BuildMessage::Log(
-                                "  [PowerShell] Paste this command:".to_string()
-                            ));
-                            send(BuildMessage::Log(format!(
-                                "    [Environment]::SetEnvironmentVariable(\"Path\", $env:Path + \";{}\", \"User\")",
-                                install_dir.display()
-                            )));
-                            send(BuildMessage::Log(String::new()));
-                            send(BuildMessage::Log(
-                                "  [Settings] Windows Settings → System → About →".to_string()
-                            ));
-                            send(BuildMessage::Log(
-                                "    Advanced system settings → Environment Variables".to_string()
-                            ));
-                        }
-                    }
+    // Optional: tests
+    if run_tests {
+        if let Err(e) = crate::workflow::run_verification_tests(
+            &workspace,
+            build_options.cargo_jobs,
+            |ev| match ev {
+                crate::workflow::Event::Phase(_) => {}
+                crate::workflow::Event::Progress(p) => {
+                    send(BuildMessage::Progress(0.92 + 0.05 * p))
                 }
-            }
-            Err(e) => {
+                crate::workflow::Event::CurrentItem(s) => send(BuildMessage::CurrentItem(s)),
+                crate::workflow::Event::Log(s) => send(BuildMessage::Log(s)),
+                crate::workflow::Event::PatchFileApplied(_) => {}
+                crate::workflow::Event::PatchFileSkipped { .. } => {}
+            },
+        ) {
+            send(BuildMessage::Log(format!(
+                "  ⚠ tests errored: {} (continuing)",
+                e
+            )));
+        }
+    }
+
+    // Optional: alias setup
+    if setup_alias {
+        send(BuildMessage::Phase(BuildPhase::Installing));
+        send(BuildMessage::CurrentItem(
+            "Setting up shell alias...".to_string(),
+        ));
+        match crate::workflow::setup_alias(&binary_path) {
+            Ok(Some(rc_file)) => {
+                send(BuildMessage::InstallPath(rc_file.clone()));
                 send(BuildMessage::Log(format!(
-                    "  ✗ Copy failed: {}",
-                    e
+                    "  ✓ Added/updated alias in {}",
+                    rc_file
                 )));
             }
+            Ok(None) => {
+                send(BuildMessage::InstallPath("manual".to_string()));
+                send(BuildMessage::Log(format!(
+                    "  ⚠ Fish shell detected: add alias manually: alias codex=\"{}\"",
+                    binary_path.display()
+                )));
+            }
+            Err(e) => send(BuildMessage::Log(format!("  ⚠ alias setup failed: {}", e))),
         }
     }
 
     let elapsed = start_time.elapsed();
     let build_time = format!("{:.1}s", elapsed.as_secs_f64());
-
     send(BuildMessage::Phase(BuildPhase::Complete));
     send(BuildMessage::Progress(1.0));
     send(BuildMessage::Complete {
         binary_path: binary_path.to_string_lossy().to_string(),
         build_time,
     });
-}
-
-/// Read workspace version from Cargo.toml
-fn read_workspace_version(workspace: &std::path::Path) -> anyhow::Result<String> {
-    let cargo_toml = workspace.join("Cargo.toml");
-    let contents = std::fs::read_to_string(&cargo_toml)?;
-
-    // Try to parse version from workspace package
-    for line in contents.lines() {
-        if line.trim().starts_with("version") && line.contains('=') {
-            if let Some(version) = line.split('=').nth(1) {
-                let version = version.trim().trim_matches('"').trim_matches('\'');
-                if !version.is_empty() {
-                    return Ok(version.to_string());
-                }
-            }
-        }
-    }
-
-    Ok("0.0.0".to_string())
 }

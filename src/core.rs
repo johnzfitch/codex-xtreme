@@ -3,7 +3,7 @@
 //! Shared functions used by both the cliclack UI and ratatui TUI.
 
 use anyhow::{bail, Result};
-use codex_patcher::{load_from_path, PatchConfig};
+use codex_patcher::{load_from_path, matches_requirement, PatchConfig};
 use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -57,6 +57,8 @@ pub fn has_mold() -> bool {
 
 pub fn has_bolt() -> bool {
     which::which("llvm-bolt").is_ok()
+        && which::which("perf2bolt").is_ok()
+        && which::which("perf").is_ok()
 }
 
 #[derive(Debug)]
@@ -313,7 +315,15 @@ pub fn has_uncommitted_changes(repo: &Path) -> bool {
 pub fn stash_changes(repo: &Path) -> Result<()> {
     let status = Command::new(resolve_command_path("git")?)
         .current_dir(repo)
-        .args(["stash", "push", "-m", "codex-xtreme auto-stash"])
+        // Include untracked so version checkouts/cherry-picks don't get blocked by local build
+        // artifacts or scratch files.
+        .args([
+            "stash",
+            "push",
+            "--include-untracked",
+            "-m",
+            "codex-xtreme auto-stash",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .status()?;
@@ -350,6 +360,45 @@ pub fn checkout_version(repo: &Path, version: &str) -> Result<()> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// DEV WORKFLOWS
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Default, Clone)]
+pub struct CherryPickOutcome {
+    pub skipped: Vec<String>,
+}
+
+/// Cherry-pick commits onto the current checkout without committing.
+///
+/// This is used in `--dev` mode so users can apply hotfixes from main.
+/// Conflicts are handled by aborting the cherry-pick and recording the SHA.
+pub fn cherry_pick_commits(repo: &Path, shas: &[String]) -> Result<CherryPickOutcome> {
+    let mut outcome = CherryPickOutcome::default();
+
+    for sha in shas {
+        let status = Command::new(resolve_command_path("git")?)
+            .current_dir(repo)
+            .args(["cherry-pick", "--no-commit", sha])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .status()?;
+
+        if !status.success() {
+            Command::new(resolve_command_path("git")?)
+                .current_dir(repo)
+                .args(["cherry-pick", "--abort"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .ok();
+            outcome.skipped.push(sha.clone());
+        }
+    }
+
+    Ok(outcome)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // PATCHES
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -380,7 +429,18 @@ pub fn find_patches_dir() -> Result<PathBuf> {
     bail!("Could not find patches directory. Set CODEX_PATCHER_PATCHES env var.")
 }
 
-/// Load all available patches
+/// Check if a patch is compatible with a target version
+pub fn is_patch_compatible(version_range: Option<&str>, target_version: &str) -> bool {
+    // Strip "rust-v" prefix if present (tags come as "rust-v0.99.0")
+    let version = target_version
+        .strip_prefix("rust-v")
+        .unwrap_or(target_version);
+
+    // Fail closed when the version requirement is malformed.
+    matches_requirement(version, version_range).unwrap_or(false)
+}
+
+/// Load all available patches, sorted alphabetically by name
 pub fn get_available_patches() -> Result<Vec<(PathBuf, PatchConfig)>> {
     let patches_dir = find_patches_dir()?;
     let mut patches = Vec::new();
@@ -397,5 +457,28 @@ pub fn get_available_patches() -> Result<Vec<(PathBuf, PatchConfig)>> {
         }
     }
 
+    patches.sort_by(|a, b| a.1.meta.name.cmp(&b.1.meta.name));
+
     Ok(patches)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_patch_compatible;
+
+    #[test]
+    fn patch_compatibility_strips_rust_prefix() {
+        assert!(is_patch_compatible(
+            Some(">=0.100.0-alpha.1"),
+            "rust-v0.100.0-alpha.2"
+        ));
+    }
+
+    #[test]
+    fn patch_compatibility_fails_closed_on_invalid_requirement() {
+        assert!(!is_patch_compatible(
+            Some(">=not-a-version"),
+            "rust-v0.100.0-alpha.2"
+        ));
+    }
 }

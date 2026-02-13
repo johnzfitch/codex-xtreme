@@ -1,13 +1,15 @@
 //! Build configuration screen for CPU target, linker, and optimization options
 
-use crate::tui::theme;
+use crate::tui::theme::{self, center_x};
 use crate::tui::widgets::Panel;
+use crate::workflow::{OptimizationFlags, OptimizationMode};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
     style::Style,
     widgets::Widget,
 };
+use unicode_width::UnicodeWidthStr;
 
 /// Build configuration option
 #[derive(Clone)]
@@ -24,6 +26,9 @@ pub struct BuildConfigScreen {
     frame: u64,
     cpu_target: String,
     cpu_detected_by: String,
+    optimization_mode: OptimizationMode,
+    has_mold: bool,
+    has_bolt: bool,
     options: Vec<ConfigOption>,
     cursor: usize,
 }
@@ -35,12 +40,34 @@ impl BuildConfigScreen {
         has_mold: bool,
         has_bolt: bool,
     ) -> Self {
+        let optimization_mode = if has_bolt {
+            OptimizationMode::RunFast
+        } else if has_mold {
+            OptimizationMode::BuildFast
+        } else {
+            OptimizationMode::Custom
+        };
+
         let options = vec![
             ConfigOption {
+                name: "Optimization mode".to_string(),
+                description: "Build fast (mold) vs run fast (BOLT) vs custom".to_string(),
+                enabled: true,
+                available: true,
+                detail: String::new(), // filled in by sync_from_mode()
+            },
+            ConfigOption {
+                name: "Optimize for CPU".to_string(),
+                description: "Use -C target-cpu=native (best runtime performance)".to_string(),
+                enabled: true,
+                available: true,
+                detail: "recommended".to_string(),
+            },
+            ConfigOption {
                 name: "Use mold linker".to_string(),
-                description: "Faster linking (5-10x speedup)".to_string(),
-                enabled: has_mold,
-                available: has_mold,
+                description: "Faster linking (custom mode only)".to_string(),
+                enabled: false,
+                available: false,
                 detail: if has_mold {
                     "found".to_string()
                 } else {
@@ -49,9 +76,9 @@ impl BuildConfigScreen {
             },
             ConfigOption {
                 name: "Use BOLT optimization".to_string(),
-                description: "Post-link binary optimization".to_string(),
-                enabled: has_bolt, // Auto-select if available
-                available: has_bolt,
+                description: "Post-link binary optimization (custom mode only)".to_string(),
+                enabled: false,
+                available: false,
                 detail: if has_bolt {
                     "found".to_string()
                 } else {
@@ -59,11 +86,11 @@ impl BuildConfigScreen {
                 },
             },
             ConfigOption {
-                name: "Release build".to_string(),
-                description: "Optimized release profile with LTO".to_string(),
+                name: "Use xtreme profile".to_string(),
+                description: "Thin LTO + 1 codegen unit (slower build, faster runtime)".to_string(),
                 enabled: true,
                 available: true,
-                detail: "recommended".to_string(),
+                detail: "recommended".to_string(), // matches CLI default
             },
             ConfigOption {
                 name: "Strip symbols".to_string(),
@@ -72,15 +99,34 @@ impl BuildConfigScreen {
                 available: true,
                 detail: "~50% size reduction".to_string(),
             },
+            ConfigOption {
+                name: "Run verification tests".to_string(),
+                description: "cargo check + core library tests".to_string(),
+                enabled: true,
+                available: true,
+                detail: "recommended".to_string(),
+            },
+            ConfigOption {
+                name: "Set up shell alias".to_string(),
+                description: "Add/update alias in your shell rc file".to_string(),
+                enabled: true,
+                available: true,
+                detail: "recommended".to_string(),
+            },
         ];
 
-        Self {
+        let mut s = Self {
             frame: 0,
             cpu_target,
             cpu_detected_by,
+            optimization_mode,
+            has_mold,
+            has_bolt,
             options,
             cursor: 0,
-        }
+        };
+        s.sync_from_mode();
+        s
     }
 
     pub fn tick(&mut self) {
@@ -100,35 +146,148 @@ impl BuildConfigScreen {
     }
 
     pub fn toggle_current(&mut self) {
+        // Optimization mode is a selector (cycles), not a checkbox.
+        if self.cursor == 0 {
+            self.optimization_mode = match self.optimization_mode {
+                OptimizationMode::BuildFast => {
+                    if self.has_bolt {
+                        OptimizationMode::RunFast
+                    } else {
+                        OptimizationMode::Custom
+                    }
+                }
+                OptimizationMode::RunFast => OptimizationMode::Custom,
+                OptimizationMode::Custom => OptimizationMode::BuildFast,
+            };
+            self.sync_from_mode();
+            return;
+        }
+
         if let Some(opt) = self.options.get_mut(self.cursor) {
             if opt.available {
                 opt.enabled = !opt.enabled;
             }
         }
+
+        // If we're in custom mode, enforce invariants after any toggle.
+        self.sync_from_mode();
     }
 
     pub fn cpu_target(&self) -> &str {
         &self.cpu_target
     }
 
+    pub fn optimization_mode(&self) -> OptimizationMode {
+        self.optimization_mode
+    }
+
+    pub fn optimization_flags(&self) -> OptimizationFlags {
+        let mut flags = OptimizationFlags {
+            use_mold: self.options.get(2).map(|o| o.enabled).unwrap_or(false),
+            use_bolt: self.options.get(3).map(|o| o.enabled).unwrap_or(false),
+        };
+        flags.enforce_invariants();
+        flags
+    }
+
+    pub fn optimize_cpu(&self) -> bool {
+        self.options.get(1).map(|o| o.enabled).unwrap_or(true)
+    }
+
     pub fn use_mold(&self) -> bool {
-        self.options.first().map(|o| o.enabled).unwrap_or(false)
+        self.options.get(2).map(|o| o.enabled).unwrap_or(false)
     }
 
     pub fn use_bolt(&self) -> bool {
-        self.options.get(1).map(|o| o.enabled).unwrap_or(false)
+        self.options.get(3).map(|o| o.enabled).unwrap_or(false)
     }
 
-    pub fn release_build(&self) -> bool {
-        self.options.get(2).map(|o| o.enabled).unwrap_or(true)
+    pub fn use_xtreme_profile(&self) -> bool {
+        self.options.get(4).map(|o| o.enabled).unwrap_or(true)
     }
 
     pub fn strip_symbols(&self) -> bool {
-        self.options.get(3).map(|o| o.enabled).unwrap_or(true)
+        self.options.get(5).map(|o| o.enabled).unwrap_or(true)
+    }
+
+    pub fn run_tests(&self) -> bool {
+        self.options.get(6).map(|o| o.enabled).unwrap_or(true)
+    }
+
+    pub fn setup_alias(&self) -> bool {
+        self.options.get(7).map(|o| o.enabled).unwrap_or(true)
     }
 
     pub fn frame(&self) -> u64 {
         self.frame
+    }
+
+    fn sync_from_mode(&mut self) {
+        // Keep the UI in sync with the selected mode and tool availability.
+        let (mut use_mold, use_bolt) = match self.optimization_mode {
+            OptimizationMode::BuildFast => (self.has_mold, false),
+            OptimizationMode::RunFast => (false, self.has_bolt),
+            OptimizationMode::Custom => (
+                self.options.get(2).map(|o| o.enabled).unwrap_or(false),
+                self.options.get(3).map(|o| o.enabled).unwrap_or(false),
+            ),
+        };
+
+        // BOLT => no mold (perf2bolt incompatibility on mold-linked binaries).
+        if use_bolt {
+            use_mold = false;
+        }
+
+        // Update the mode detail line.
+        let mode_label = match self.optimization_mode {
+            OptimizationMode::BuildFast => "Build fast (mold)",
+            OptimizationMode::RunFast => "Run fast (BOLT)",
+            OptimizationMode::Custom => "Custom",
+        };
+        if let Some(mode_opt) = self.options.first_mut() {
+            mode_opt.detail = match self.optimization_mode {
+                OptimizationMode::Custom => format!(
+                    "{}  mold:{}  BOLT:{}",
+                    mode_label,
+                    if use_mold { "on" } else { "off" },
+                    if use_bolt { "on" } else { "off" }
+                ),
+                _ => mode_label.to_string(),
+            };
+        }
+
+        // Custom-only knobs.
+        let custom = self.optimization_mode == OptimizationMode::Custom;
+        if let Some(mold_opt) = self.options.get_mut(2) {
+            mold_opt.available = custom && self.has_mold;
+            mold_opt.enabled = if custom {
+                use_mold
+            } else {
+                use_mold && self.has_mold
+            };
+            if !self.has_mold {
+                mold_opt.detail = "not installed".to_string();
+            } else if !custom {
+                mold_opt.detail = "managed by mode".to_string();
+            } else {
+                mold_opt.detail = "found".to_string();
+            }
+        }
+        if let Some(bolt_opt) = self.options.get_mut(3) {
+            bolt_opt.available = custom && self.has_bolt;
+            bolt_opt.enabled = if custom {
+                use_bolt
+            } else {
+                use_bolt && self.has_bolt
+            };
+            if !self.has_bolt {
+                bolt_opt.detail = "not installed".to_string();
+            } else if !custom {
+                bolt_opt.detail = "managed by mode".to_string();
+            } else {
+                bolt_opt.detail = "found".to_string();
+            }
+        }
     }
 }
 
@@ -153,7 +312,8 @@ impl Widget for &BuildConfigScreen {
 
         // Header
         let header_line = "░▒▓█ BUILD CONFIG //ビルド設定 █▓▒░".to_string();
-        let header_x = area.x + (area.width.saturating_sub(header_line.len() as u16)) / 2;
+        let header_w = UnicodeWidthStr::width(header_line.as_str()) as u16;
+        let header_x = center_x(area.x, area.width, header_w);
         buf.set_string(header_x, chunks[0].y + 1, &header_line, theme::title());
 
         // CPU panel
@@ -216,14 +376,20 @@ impl Widget for &BuildConfigScreen {
             };
             buf.set_string(inner_x, y, cursor_char.to_string(), theme::cursor());
 
-            // Checkbox
-            let checkbox = if opt.enabled { "[✓]" } else { "[ ]" };
-            let checkbox_style = if !opt.available {
-                theme::muted()
-            } else if opt.enabled {
-                theme::success()
+            // Checkbox / selector glyph
+            let (checkbox, checkbox_style) = if idx == 0 {
+                // Optimization mode is a selector (cycle), not a boolean toggle.
+                ("[<>]".to_string(), theme::secondary())
             } else {
-                theme::secondary()
+                let checkbox = if opt.enabled { "[✓]" } else { "[ ]" };
+                let style = if !opt.available {
+                    theme::muted()
+                } else if opt.enabled {
+                    theme::success()
+                } else {
+                    theme::secondary()
+                };
+                (checkbox.to_string(), style)
             };
             buf.set_string(inner_x + 2, y, checkbox, checkbox_style);
 

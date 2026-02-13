@@ -1,6 +1,6 @@
 //! Clone progress screen
 
-use crate::tui::theme::{self, jp};
+use crate::tui::theme::{self, center_x, jp};
 use crate::tui::widgets::Panel;
 use ratatui::{
     buffer::Buffer,
@@ -8,6 +8,7 @@ use ratatui::{
     style::Style,
     widgets::Widget,
 };
+use unicode_width::UnicodeWidthStr;
 
 /// Clone status
 #[derive(Clone, Copy, PartialEq)]
@@ -121,7 +122,8 @@ impl Widget for &CloneScreen {
             CloneStatus::Error => "CLONE FAILED",
         };
         let header_line = format!("░▒▓█ {} //{} █▓▒░", header_text, jp::CONNECTING);
-        let header_x = area.x + (area.width.saturating_sub(header_line.len() as u16)) / 2;
+        let header_w = UnicodeWidthStr::width(header_line.as_str()) as u16;
+        let header_x = center_x(area.x, area.width, header_w);
         let header_style = match self.status {
             CloneStatus::Cloning => theme::title(),
             CloneStatus::Complete => theme::success(),
