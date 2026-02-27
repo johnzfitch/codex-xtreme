@@ -13,3 +13,9 @@
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code artifacts
+.claude/
+
+# Development binaries
+cx-dev
