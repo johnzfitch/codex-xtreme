@@ -10,8 +10,8 @@ keywords = ["codex", "cli", "build", "wizard", "patch"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
-# Patch system - use local path for in-tree development
-codex-patcher = { path = "../codex-patcher" }
+# Patch system - git dependency for CI compatibility, override with path in local dev
+codex-patcher = { git = "https://github.com/johnzfitch/codex-patcher" }
 
 # TUI framework
 ratatui = "0.30"

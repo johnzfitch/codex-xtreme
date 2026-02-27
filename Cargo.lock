@@ -345,6 +345,7 @@ dependencies = [
 [[package]]
 name = "codex-patcher"
 version = "0.1.0"
+source = "git+https://github.com/johnzfitch/codex-patcher#50f5c7154e5a9060082d40b00b3170dc57b46a40"
 dependencies = [
  "anyhow",
  "ast-grep-core",
