@@ -22,16 +22,20 @@ async fn main() -> anyhow::Result<()> {
             } else if let Some(rest) = arg.strip_prefix("--jobs=") {
                 Some(rest)
             } else if let Some(rest) = arg.strip_prefix("-j") {
-                if rest.is_empty() { None } else { Some(rest) }
+                if rest.is_empty() {
+                    None
+                } else {
+                    Some(rest)
+                }
             } else {
                 None
             };
             let Some(value) = value else { continue };
-            let jobs: usize = value.parse().map_err(|_| anyhow::anyhow!("Invalid value for --jobs/-j: {value}"))?;
+            let jobs: usize = value
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid value for --jobs/-j: {value}"))?;
             if jobs == 0 {
-                return Err(anyhow::anyhow!(
-                    "Invalid value for --jobs/-j: must be >= 1"
-                ));
+                return Err(anyhow::anyhow!("Invalid value for --jobs/-j: must be >= 1"));
             }
             if found.replace(jobs).is_some() {
                 return Err(anyhow::anyhow!(

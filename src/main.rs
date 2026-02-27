@@ -99,7 +99,11 @@ fn parse_args() -> Args {
             } else if let Some(rest) = arg.strip_prefix("--jobs=") {
                 Some(rest)
             } else if let Some(rest) = arg.strip_prefix("-j") {
-                if rest.is_empty() { None } else { Some(rest) }
+                if rest.is_empty() {
+                    None
+                } else {
+                    Some(rest)
+                }
             } else {
                 None
             };
@@ -626,17 +630,21 @@ fn main() -> Result<()> {
     {
         let sp = spinner();
         sp.start("Running verification tests...");
-        codex_xtreme::workflow::run_verification_tests(&workspace, args.cargo_jobs, |ev| match ev {
-            codex_xtreme::workflow::Event::Phase(_) => {}
-            codex_xtreme::workflow::Event::Progress(_) => {}
-            codex_xtreme::workflow::Event::CurrentItem(s) => sp.set_message(s),
-            codex_xtreme::workflow::Event::Log(s) => {
-                // Tests are a side step; keep output concise.
-                let _ = log::info(s);
-            }
-            codex_xtreme::workflow::Event::PatchFileApplied(_) => {}
-            codex_xtreme::workflow::Event::PatchFileSkipped { .. } => {}
-        })?;
+        codex_xtreme::workflow::run_verification_tests(
+            &workspace,
+            args.cargo_jobs,
+            |ev| match ev {
+                codex_xtreme::workflow::Event::Phase(_) => {}
+                codex_xtreme::workflow::Event::Progress(_) => {}
+                codex_xtreme::workflow::Event::CurrentItem(s) => sp.set_message(s),
+                codex_xtreme::workflow::Event::Log(s) => {
+                    // Tests are a side step; keep output concise.
+                    let _ = log::info(s);
+                }
+                codex_xtreme::workflow::Event::PatchFileApplied(_) => {}
+                codex_xtreme::workflow::Event::PatchFileSkipped { .. } => {}
+            },
+        )?;
         sp.stop("Verification tests finished");
     }
 

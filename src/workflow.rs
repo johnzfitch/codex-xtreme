@@ -317,9 +317,14 @@ pub fn build_with_autofix(
     const MAX_FIX_ATTEMPTS: usize = 5;
 
     for attempt in 1..=MAX_FIX_ATTEMPTS {
-        match run_cargo_build(workspace, profile, cpu_target, optimization, cargo_jobs, |msg| {
-            emit(Event::CurrentItem(msg))
-        }) {
+        match run_cargo_build(
+            workspace,
+            profile,
+            cpu_target,
+            optimization,
+            cargo_jobs,
+            |msg| emit(Event::CurrentItem(msg)),
+        ) {
             Ok(path) => return Ok(path),
             Err(BuildError::Other(e)) => return Err(e),
             Err(BuildError::CompileError { diagnostics }) => {
@@ -682,10 +687,7 @@ pub fn run_verification_tests(
         if let Some(jobs) = cargo_jobs {
             cmd.arg("--jobs").arg(jobs.to_string());
         }
-        let status = cmd
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()?;
+        let status = cmd.stdout(Stdio::null()).stderr(Stdio::null()).status()?;
 
         if status.success() {
             emit(Event::Log(format!("  ✓ {}", name)));

@@ -418,13 +418,13 @@ impl App {
                         "release".to_string()
                     };
 
-	                    self.build_options = Some(crate::workflow::BuildOptions {
-	                        profile,
-	                        cpu_target,
-	                        optimization: screen.optimization_flags(),
-	                        strip_symbols: screen.strip_symbols(),
-	                        cargo_jobs: self.cargo_jobs,
-	                    });
+                    self.build_options = Some(crate::workflow::BuildOptions {
+                        profile,
+                        cpu_target,
+                        optimization: screen.optimization_flags(),
+                        strip_symbols: screen.strip_symbols(),
+                        cargo_jobs: self.cargo_jobs,
+                    });
                     self.run_tests = screen.run_tests();
                     self.setup_alias = screen.setup_alias();
                     self.start_build();
@@ -612,19 +612,29 @@ impl App {
         let workspace = repo_path.join(core::CODEX_RS_SUBDIR);
         let build_options = match &self.build_options {
             Some(o) => o.clone(),
-	            None => crate::workflow::BuildOptions {
-	                profile: "xtreme".to_string(),
-	                cpu_target: Some(core::detect_cpu_target().rustc_target_cpu().to_string()),
-	                optimization: crate::workflow::OptimizationFlags {
-	                    use_mold: false,
-	                    use_bolt: core::has_bolt(),
-	                },
-	                strip_symbols: true,
-	                cargo_jobs: self.cargo_jobs,
-	            },
-	        };
+            None => crate::workflow::BuildOptions {
+                profile: "xtreme".to_string(),
+                cpu_target: Some(core::detect_cpu_target().rustc_target_cpu().to_string()),
+                optimization: crate::workflow::OptimizationFlags {
+                    use_mold: false,
+                    use_bolt: core::has_bolt(),
+                },
+                strip_symbols: true,
+                cargo_jobs: self.cargo_jobs,
+            },
+        };
         let run_tests = self.run_tests;
         let setup_alias = self.setup_alias;
+        let params = RunBuildParams {
+            repo_path,
+            workspace,
+            version,
+            cherry_pick_shas,
+            patches,
+            build_options,
+            run_tests,
+            setup_alias,
+        };
 
         // Create channel for progress updates
         let (tx, rx) = mpsc::channel();
@@ -632,24 +642,12 @@ impl App {
 
         // Spawn background build thread
         thread::spawn(move || {
-            run_build(
-                tx,
-                repo_path,
-                workspace,
-                version,
-                cherry_pick_shas,
-                patches,
-                build_options,
-                run_tests,
-                setup_alias,
-            );
+            run_build(tx, params);
         });
     }
 }
 
-/// Background build process
-fn run_build(
-    tx: mpsc::Sender<BuildMessage>,
+struct RunBuildParams {
     repo_path: PathBuf,
     workspace: PathBuf,
     version: String,
@@ -658,7 +656,21 @@ fn run_build(
     build_options: crate::workflow::BuildOptions,
     run_tests: bool,
     setup_alias: bool,
-) {
+}
+
+/// Background build process
+fn run_build(tx: mpsc::Sender<BuildMessage>, params: RunBuildParams) {
+    let RunBuildParams {
+        repo_path,
+        workspace,
+        version,
+        cherry_pick_shas,
+        patches,
+        build_options,
+        run_tests,
+        setup_alias,
+    } = params;
+
     let start_time = Instant::now();
 
     // Send helper
@@ -750,17 +762,17 @@ fn run_build(
         build_options.profile
     )));
 
-	    let mut binary_path = match crate::workflow::build_with_autofix(
-	        &workspace,
-	        &build_options.profile,
-	        build_options.cpu_target.as_deref(),
-	        &build_options.optimization,
-	        build_options.cargo_jobs,
-	        |ev| match ev {
-	            crate::workflow::Event::Phase(_) => {}
-	            crate::workflow::Event::Progress(p) => send(BuildMessage::Progress(0.10 + 0.75 * p)),
-	            crate::workflow::Event::CurrentItem(s) => send(BuildMessage::CurrentItem(s)),
-	            crate::workflow::Event::Log(s) => send(BuildMessage::Log(s)),
+    let mut binary_path = match crate::workflow::build_with_autofix(
+        &workspace,
+        &build_options.profile,
+        build_options.cpu_target.as_deref(),
+        &build_options.optimization,
+        build_options.cargo_jobs,
+        |ev| match ev {
+            crate::workflow::Event::Phase(_) => {}
+            crate::workflow::Event::Progress(p) => send(BuildMessage::Progress(0.10 + 0.75 * p)),
+            crate::workflow::Event::CurrentItem(s) => send(BuildMessage::CurrentItem(s)),
+            crate::workflow::Event::Log(s) => send(BuildMessage::Log(s)),
             crate::workflow::Event::PatchFileApplied(_) => {}
             crate::workflow::Event::PatchFileSkipped { .. } => {}
         },
@@ -809,20 +821,20 @@ fn run_build(
 
     // Optional: tests
     if run_tests {
-        if let Err(e) = crate::workflow::run_verification_tests(
-            &workspace,
-            build_options.cargo_jobs,
-            |ev| match ev {
-                crate::workflow::Event::Phase(_) => {}
-                crate::workflow::Event::Progress(p) => {
-                    send(BuildMessage::Progress(0.92 + 0.05 * p))
+        if let Err(e) =
+            crate::workflow::run_verification_tests(&workspace, build_options.cargo_jobs, |ev| {
+                match ev {
+                    crate::workflow::Event::Phase(_) => {}
+                    crate::workflow::Event::Progress(p) => {
+                        send(BuildMessage::Progress(0.92 + 0.05 * p))
+                    }
+                    crate::workflow::Event::CurrentItem(s) => send(BuildMessage::CurrentItem(s)),
+                    crate::workflow::Event::Log(s) => send(BuildMessage::Log(s)),
+                    crate::workflow::Event::PatchFileApplied(_) => {}
+                    crate::workflow::Event::PatchFileSkipped { .. } => {}
                 }
-                crate::workflow::Event::CurrentItem(s) => send(BuildMessage::CurrentItem(s)),
-                crate::workflow::Event::Log(s) => send(BuildMessage::Log(s)),
-                crate::workflow::Event::PatchFileApplied(_) => {}
-                crate::workflow::Event::PatchFileSkipped { .. } => {}
-            },
-        ) {
+            })
+        {
             send(BuildMessage::Log(format!(
                 "  ⚠ tests errored: {} (continuing)",
                 e
