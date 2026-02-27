@@ -1,8 +1,6 @@
 <p align="center">
-  <img src=".github/assets/icons/rocket.png" width="96" alt="Codex Xtreme"/>
+  <img src=".github/assets/logo/codex-xtreme-boot.png" width="800" alt="CODEX//XTREME - Initializing System"/>
 </p>
-
-<h1 align="center">CODEX//XTREME</h1>
 
 <p align="center">
   <strong>Interactive <abbr title="Text User Interface">TUI</abbr> wizard for building optimized, privacy-hardened Codex binaries</strong>
